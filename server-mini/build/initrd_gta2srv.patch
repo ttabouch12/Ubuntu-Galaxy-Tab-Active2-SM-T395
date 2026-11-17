@@ -1,0 +1,16 @@
+--- a/scripts/halium
++++ b/scripts/halium
+@@ mountroot() @@
+ 	resize_userdata_if_needed ${path}
++
++	# gta2srv: native Ubuntu server rootfs, no Android container.
++	# Boots /userdata/gta2srv/rootfs.img when /userdata/gta2srv/enabled exists; delete that file (e.g. from TWRP) to boot Ubuntu Touch again.
++	mount -o errors=remount-ro $path /tmpmnt
++	if [ -f /tmpmnt/gta2srv/enabled ] && [ -f /tmpmnt/gta2srv/rootfs.img ]; then
++		tell_kmsg "gta2srv: booting native rootfs"
++		mount -o loop,rw,noatime /tmpmnt/gta2srv/rootfs.img ${rootmnt} || halium_panic "gta2srv: rootfs mount failed"
++		mkdir -p ${rootmnt}/userdata
++		mount --move /tmpmnt ${rootmnt}/userdata
++		return 0
++	fi
++	umount /tmpmnt

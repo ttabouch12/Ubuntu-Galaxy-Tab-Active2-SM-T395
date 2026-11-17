@@ -1,0 +1,8 @@
+[Unit]
+Description=gta2: USB RNDIS network to the laptop (10.15.19.82)
+[Service]
+ExecStart=/usr/local/sbin/gta2-usbnet.sh
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

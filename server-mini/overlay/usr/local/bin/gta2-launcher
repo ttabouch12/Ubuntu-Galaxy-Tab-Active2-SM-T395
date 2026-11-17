@@ -1,0 +1,34 @@
+#!/usr/bin/python3
+# gta2srv launcher: Second screen / Terminal / Settings + live status (IPs, battery, Docker)
+import tkinter as tk, subprocess, socket, glob, os
+BG, FG, ACC = '#101418', '#e8eef2', '#2b6cb0'
+def sh(c):
+    try: return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception: return ''
+def ip(dev):
+    return sh("ip -4 -o addr show dev %s 2>/dev/null | awk '{print $4}' | cut -d/ -f1" % dev)
+def battery():
+    b = '/sys/class/power_supply/battery/'
+    try: return '%s%% %s' % (open(b + 'capacity').read().strip(), open(b + 'status').read().strip())
+    except OSError: return '?'
+r = tk.Tk(className='gta2-launcher'); r.title('gta2-launcher')
+r.configure(bg=BG); r.attributes('-fullscreen', True)
+tk.Label(r, text='GTA2 server', font=('DejaVu Sans', 30, 'bold'), bg=BG, fg=FG).pack(pady=(50, 10))
+st = tk.Label(r, font=('DejaVu Sans Mono', 15), bg=BG, fg='#9fb3c8', justify='left'); st.pack(pady=10)
+def run(cmd): subprocess.Popen(cmd, shell=True)
+for label, cmd in (('Second screen', 'gta2-moonlight'),
+                   ('Terminal', "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg black -fg white -e bash -l"),
+                   ('Settings', 'gta2-settings')):
+    tk.Button(r, text=label, font=('DejaVu Sans', 26), bg=ACC, fg='white', activebackground='#3c82c8',
+              relief='flat', height=2, command=lambda c=cmd: run(c)).pack(fill='x', padx=60, pady=18)
+tk.Label(r, text='POWER screen off/on · VOL brightness · HOME this screen\nBACK Esc · RECENTS keyboard',
+         font=('DejaVu Sans', 13), bg=BG, fg='#6b7d8f').pack(side='bottom', pady=30)
+def tick():
+    w, u = ip('wlan0'), ip('rndis0')
+    ssid = sh("nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2")
+    dk = sh('systemctl is-active docker'); n = sh('docker ps -q 2>/dev/null | wc -l') if dk == 'active' else '-'
+    a = w or u
+    st.config(text='Wi-Fi : %s %s\nUSB   : %s\nBatt  : %s\nDocker: %s (%s running)\nPortainer: %s\nssh   : gta2@%s' % (
+        ssid or '-', w or '', u or '-', battery(), dk, n, ('https://%s:9443' % a) if a else '-', a or '?'))
+    r.after(5000, tick)
+tick(); r.mainloop()

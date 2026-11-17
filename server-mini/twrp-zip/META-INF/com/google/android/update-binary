@@ -1,0 +1,25 @@
+#!/sbin/sh
+# Ubuntu Server Mini installer for Galaxy Tab Active2 LTE (SM-T395 / gtactive2lte), TWRP
+OUTFD=/proc/self/fd/$2; ZIP="$3"
+ui() { echo "ui_print $1" > $OUTFD; echo "ui_print" > $OUTFD; }
+die() { ui "ERROR: $1"; exit 1; }
+ui "=== Ubuntu Server Mini (Ubuntu 24.04 arm64) ==="
+D=$(getprop ro.product.device); [ -z "$D" ] && D=$(getprop ro.build.product)
+case "$D" in ''|gtactive2lte*|gta2*|SM-T395*|*T395*) ;; *) die "this zip is only for SM-T395 (gtactive2lte), found '$D'";; esac
+BOOT=$(ls /dev/block/platform/*/by-name/BOOT 2>/dev/null | head -1); [ -b "$BOOT" ] || BOOT=/dev/block/mmcblk0p10
+DATA=$(ls /dev/block/platform/*/by-name/USERDATA 2>/dev/null | head -1); [ -b "$DATA" ] || DATA=/dev/block/mmcblk0p24
+mount | grep -q " /data " || mount -t ext4 $DATA /data || die "cannot mount /data. In TWRP: Wipe > Format Data (type yes), then flash again."
+[ -d /data/unencrypted ] && die "/data is encrypted by Android. In TWRP: Wipe > Format Data (type yes), then flash again."
+FREE=$(df -k /data | tail -1 | awk '{print $4}'); [ "$FREE" -gt 3200000 ] || die "need 3.2 GB free on /data (have $((FREE/1024)) MB)"
+ui "- unpacking system image (2.4 GB, about 1-2 min)..."
+mkdir -p /data/gta2srv/docker
+unzip -p "$ZIP" rootfs.img.gz | gunzip -c > /data/gta2srv/rootfs.img.tmp || die "unpack failed"
+mv /data/gta2srv/rootfs.img.tmp /data/gta2srv/rootfs.img
+touch /data/gta2srv/enabled
+ui "- flashing kernel + boot image to $BOOT"
+unzip -p "$ZIP" boot.img > /tmp/gta2srv_boot.img || die "boot.img missing"
+dd if=/tmp/gta2srv_boot.img of=$BOOT bs=1M 2>/dev/null || die "boot flash failed"
+sync
+ui "Done. Reboot > System. Boot takes ~20 s."
+ui "Login: user gta2 / password gta2 (change it with: passwd)"
+exit 0

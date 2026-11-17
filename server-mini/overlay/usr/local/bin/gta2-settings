@@ -1,0 +1,104 @@
+#!/usr/bin/python3
+# gta2srv settings: Wi-Fi (scan/connect/forget, DHCP or static IP), brightness, battery, network info, power
+import tkinter as tk, subprocess, glob, threading
+BG, FG, ACC, F, FS = '#101418', '#e8eef2', '#2b6cb0', ('DejaVu Sans', 17), ('DejaVu Sans', 14)
+def sh(c, t=20):
+    try:
+        p = subprocess.run(c, capture_output=True, text=True, timeout=t)
+        return (p.stdout + p.stderr).strip()
+    except Exception as e: return str(e)
+def nm(*a): return sh(['sudo', '-n', 'nmcli'] + list(a), 40)
+r = tk.Tk(className='gta2-settings'); r.title('gta2-settings'); r.configure(bg=BG); r.attributes('-fullscreen', True)
+def btn(p, t, cmd, **k): return tk.Button(p, text=t, command=cmd, font=F, bg=ACC, fg='white', relief='flat', activebackground='#3c82c8', **k)
+def lbl(p, t='', **k): return tk.Label(p, text=t, font=F, bg=BG, fg=FG, **k)
+top = tk.Frame(r, bg=BG); top.pack(fill='x', pady=8)
+btn(top, '< Back', r.destroy).pack(side='left', padx=10)
+lbl(top, 'Settings', font=('DejaVu Sans', 24, 'bold')).pack(side='left', padx=20)
+msg = tk.Label(r, font=FS, bg=BG, fg='#f6ad55', wraplength=760, justify='left'); msg.pack(fill='x', padx=12)
+def say(t): msg.config(text=t)
+# ---- Wi-Fi
+wf = tk.LabelFrame(r, text=' Wi-Fi ', font=F, bg=BG, fg=FG); wf.pack(fill='both', expand=True, padx=10, pady=6)
+lb = tk.Listbox(wf, font=('DejaVu Sans Mono', 16), height=7, bg='#1a2129', fg=FG, selectbackground=ACC, activestyle='none'); lb.pack(fill='both', expand=True, padx=6, pady=6)
+nets = []
+def scan():
+    say('scanning...')
+    def w():
+        nm('dev', 'wifi', 'rescan'); out = nm('-t', '-f', 'IN-USE,SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list')
+        rows, seen = [], set()
+        for l in out.splitlines():
+            p = l.replace('\\:', '\0').split(':')
+            if len(p) < 4: continue
+            u, s, sig, sec = [x.replace('\0', ':') for x in p[:4]]
+            if not s or s in seen: continue
+            seen.add(s); rows.append((u == '*', s, int(sig or 0), sec))
+        rows.sort(key=lambda x: (-x[0], -x[2]))
+        def ui():
+            nets[:] = rows; lb.delete(0, 'end')
+            for u, s, sig, sec in rows: lb.insert('end', '%s %-22s %3d%% %s' % ('*' if u else ' ', s[:22], sig, 'lock' if sec and sec != '--' else ''))
+            say('%d networks' % len(rows))
+        r.after(0, ui)
+    threading.Thread(target=w, daemon=True).start()
+row = tk.Frame(wf, bg=BG); row.pack(fill='x')
+lbl(row, 'Password').pack(side='left', padx=6)
+pw = tk.Entry(row, font=F, show='*', width=18); pw.pack(side='left', padx=6)
+def kb(): subprocess.Popen('pgrep -x matchbox-keyboa || matchbox-keyboard', shell=True)
+pw.bind('<FocusIn>', lambda e: kb())
+mode = tk.StringVar(value='dhcp')
+st = tk.Frame(wf, bg=BG); st.pack(fill='x', pady=4)
+for v, t in (('dhcp', 'DHCP'), ('static', 'Static')):
+    tk.Radiobutton(st, text=t, variable=mode, value=v, font=FS, bg=BG, fg=FG, selectcolor='#1a2129').pack(side='left', padx=6)
+ents = {}
+for k, d in (('IP/len', '192.168.1.50/24'), ('Gateway', '192.168.1.1'), ('DNS', '1.1.1.1')):
+    lbl(st, k, font=FS).pack(side='left'); e = tk.Entry(st, font=FS, width=11); e.insert(0, d); e.pack(side='left', padx=3); ents[k] = e
+    e.bind('<FocusIn>', lambda ev: kb())
+def sel():
+    i = lb.curselection(); return nets[i[0]][1] if i else None
+def connect():
+    s = sel()
+    if not s: return say('select a network first')
+    say('connecting to %s ...' % s)
+    def w():
+        a = ['dev', 'wifi', 'connect', s] + (['password', pw.get()] if pw.get() else [])
+        out = nm(*a)
+        if 'success' in out and mode.get() == 'static':
+            out += '\n' + nm('con', 'mod', s, 'ipv4.method', 'manual', 'ipv4.addresses', ents['IP/len'].get(),
+                             'ipv4.gateway', ents['Gateway'].get(), 'ipv4.dns', ents['DNS'].get()) + nm('con', 'up', s)
+        elif 'success' in out:
+            nm('con', 'mod', s, 'ipv4.method', 'auto', 'ipv4.addresses', '', 'ipv4.gateway', '', 'ipv4.dns', '')
+        r.after(0, lambda: (say(out[-300:]), scan(), info()))
+    threading.Thread(target=w, daemon=True).start()
+def forget():
+    s = sel()
+    if s: say(nm('con', 'delete', s)); scan()
+def wifi_toggle():
+    on = 'enabled' in nm('radio', 'wifi'); say(nm('radio', 'wifi', 'off' if on else 'on') or ('Wi-Fi ' + ('off' if on else 'on')))
+b = tk.Frame(wf, bg=BG); b.pack(fill='x', pady=4)
+for t, c in (('Scan', scan), ('Connect', connect), ('Forget', forget), ('Wi-Fi on/off', wifi_toggle)):
+    btn(b, t, c).pack(side='left', expand=True, fill='x', padx=4)
+# ---- brightness
+bf = tk.LabelFrame(r, text=' Brightness ', font=F, bg=BG, fg=FG); bf.pack(fill='x', padx=10, pady=6)
+BL = glob.glob('/sys/class/backlight/*')[0]; MX = int(open(BL + '/max_brightness').read())
+sc = tk.Scale(bf, from_=5, to=MX, orient='horizontal', font=FS, bg=BG, fg=FG, highlightthickness=0, width=30, sliderlength=50,
+              command=lambda v: subprocess.call(['sudo', '-n', 'sh', '-c', 'echo %s > %s/brightness' % (v, BL)]))
+sc.set(int(open(BL + '/brightness').read())); sc.pack(fill='x', padx=10)
+# ---- info
+inf = tk.LabelFrame(r, text=' Status ', font=F, bg=BG, fg=FG); inf.pack(fill='x', padx=10, pady=6)
+il = tk.Label(inf, font=('DejaVu Sans Mono', 13), bg=BG, fg='#9fb3c8', justify='left', anchor='w'); il.pack(fill='x', padx=8)
+def rd(p):
+    try: return open(p).read().strip()
+    except OSError: return '?'
+def info():
+    B = '/sys/class/power_supply/battery/'
+    ips = sh(['sh', '-c', "ip -4 -o addr | awk '$2!=\"lo\"{print $2\" \"$4}'"])
+    up = sh(['uptime', '-p']); mem = sh(['sh', '-c', "free -m | awk '/Mem/{print $3\"/\"$2\" MB\"}'"])
+    t = rd(B + 'temp'); t = '%.1f C' % (int(t) / 10) if t.lstrip('-').isdigit() else t
+    il.config(text='Battery %s%%  %s  %s\nRAM %s   %s\n%s' % (rd(B + 'capacity'), rd(B + 'status'), t, mem, up, ips))
+    r.after(10000, info)
+# ---- power
+pf = tk.Frame(r, bg=BG); pf.pack(fill='x', padx=10, pady=10)
+def confirm(t, cmd):
+    if getattr(confirm, 'armed', None) == t: subprocess.call(['sudo', '-n'] + cmd)
+    confirm.armed = t; say('press "%s" again to confirm' % t)
+for t, c in (('Reboot', ['systemctl', 'reboot']), ('Shut down', ['systemctl', 'poweroff']), ('Recovery (TWRP)', ['systemctl', 'reboot', 'recovery'])):
+    tk.Button(pf, text=t, font=F, bg='#9b2c2c', fg='white', relief='flat', command=lambda t=t, c=c: confirm(t, c)).pack(side='left', expand=True, fill='x', padx=4)
+info(); scan(); r.mainloop()

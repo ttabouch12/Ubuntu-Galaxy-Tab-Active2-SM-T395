@@ -1,0 +1,7 @@
+#!/bin/sh
+# gta2srv X session: one fullscreen app at a time (matchbox), launcher underneath
+xset s off -dpms 2>/dev/null
+xsetroot -solid '#101418' 2>/dev/null
+matchbox-window-manager -use_titlebar no -use_cursor no &
+python3 /usr/local/bin/gta2-keys &
+while true; do python3 /usr/local/bin/gta2-launcher; sleep 1; done

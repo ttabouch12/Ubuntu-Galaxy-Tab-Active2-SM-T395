@@ -1,0 +1,11 @@
+[Unit]
+Description=gta2: load QCA9377 Wi-Fi firmware (qcacld kickstart)
+After=vendor.mount
+Requires=vendor.mount
+Before=NetworkManager.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo sta > /sys/module/wlan/parameters/fwpath; for i in $(seq 1 40); do [ -e /sys/class/net/wlan0 ] && exit 0; sleep 0.25; done'
+[Install]
+WantedBy=multi-user.target

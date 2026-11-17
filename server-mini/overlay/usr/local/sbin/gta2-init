@@ -1,0 +1,5 @@
+#!/bin/sh
+# gta2srv PID1 wrapper: the Samsung bootloader ignores the boot.img cmdline, so hand systemd extra
+# "kernel" args via SYSTEMD_PROC_CMDLINE. cgroup v1: the backported cgroup2 lacks BPF device control (runc needs it).
+export SYSTEMD_PROC_CMDLINE="$(cat /proc/cmdline) systemd.unified_cgroup_hierarchy=0 SYSTEMD_CGROUP_ENABLE_LEGACY_FORCE=1"
+exec /usr/lib/systemd/systemd "$@"

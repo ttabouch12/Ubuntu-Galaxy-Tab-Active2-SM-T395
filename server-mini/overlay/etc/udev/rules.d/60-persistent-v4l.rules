@@ -1,0 +1,1 @@
+# gta2: masks the stock rule. v4l_id probing the Exynos camera (fimc-is) nodes panics this kernel.

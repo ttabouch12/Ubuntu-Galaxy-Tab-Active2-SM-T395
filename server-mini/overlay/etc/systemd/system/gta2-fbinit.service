@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: start fb0 scanout
+Before=gta2-gui.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/gta2-fbinit.py
+[Install]
+WantedBy=multi-user.target

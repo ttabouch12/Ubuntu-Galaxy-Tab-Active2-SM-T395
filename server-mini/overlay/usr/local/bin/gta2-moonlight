@@ -1,0 +1,51 @@
+#!/usr/bin/python3
+# gta2srv second screen: Moonlight (moonlight-embedded, SDL software path) <- Sunshine on the laptop
+# Laptop over USB is found automatically from the RNDIS DHCP lease; Wi-Fi host can be typed in.
+import tkinter as tk, subprocess, threading, os, re
+CFG = os.path.expanduser('~/.config/gta2'); os.makedirs(CFG, exist_ok=True); HF = CFG + '/host'
+BG, FG, ACC, F = '#101418', '#e8eef2', '#2b6cb0', ('DejaVu Sans', 18)
+def usb_host():
+    try:
+        for l in open('/run/gta2-usb.leases'): return l.split()[2]
+    except (OSError, IndexError): return ''
+def saved():
+    try: return open(HF).read().strip()
+    except OSError: return ''
+r = tk.Tk(className='gta2-moonlight'); r.title('gta2-moonlight'); r.configure(bg=BG); r.attributes('-fullscreen', True)
+top = tk.Frame(r, bg=BG); top.pack(fill='x', pady=8)
+tk.Button(top, text='< Back', font=F, bg=ACC, fg='white', relief='flat', command=r.destroy).pack(side='left', padx=10)
+tk.Label(top, text='Second screen', font=('DejaVu Sans', 24, 'bold'), bg=BG, fg=FG).pack(side='left', padx=20)
+def field(t, d):
+    f = tk.Frame(r, bg=BG); f.pack(fill='x', padx=20, pady=8)
+    tk.Label(f, text=t, font=F, bg=BG, fg=FG, width=11, anchor='w').pack(side='left')
+    e = tk.Entry(f, font=F); e.insert(0, d); e.pack(side='left', fill='x', expand=True)
+    e.bind('<FocusIn>', lambda ev: subprocess.Popen('pgrep -x matchbox-keyboa || matchbox-keyboard', shell=True)); return e
+host = field('Laptop IP', usb_host() or saved())
+fps = field('FPS', '60'); br = field('Bitrate kb/s', '12000'); app = field('App', 'Desktop')
+out = tk.Label(r, font=('DejaVu Sans Mono', 14), bg=BG, fg='#f6ad55', wraplength=760, justify='left'); out.pack(fill='both', expand=True, padx=20)
+def say(t): r.after(0, lambda: out.config(text=t))
+def h():
+    v = host.get().strip(); open(HF, 'w').write(v); return v
+def pair():
+    hh = h(); say('pairing with %s ...' % hh)
+    def w():
+        p = subprocess.Popen(['moonlight', 'pair', hh], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True); acc = ''
+        for l in p.stdout:
+            acc += l; m = re.search(r'PIN.*?(\d{4})', l)
+            say(('PIN: %s\nEnter it in Sunshine web UI (https://localhost:47990 on the laptop) -> PIN\n\n' % m.group(1) if m else '') + acc[-600:])
+        p.wait(); say(acc[-800:] or 'done')
+    threading.Thread(target=w, daemon=True).start()
+def stream():
+    hh = h(); say('streaming... press the HOME key or BACK twice to stop')
+    subprocess.call('pkill -x matchbox-keyboa', shell=True)
+    def w():
+        env = dict(os.environ, SDL_RENDER_DRIVER='software', SDL_VIDEO_X11_XRANDR='0')
+        p = subprocess.run(['moonlight', 'stream', '-platform', 'sdl', '-width', '800', '-height', '1280', '-fps', fps.get(), '-bitrate', br.get(),
+                            '-app', app.get(), '-localaudio', '-nounsupported', hh], capture_output=True, text=True, env=env)
+        say((p.stdout + p.stderr)[-800:])
+    threading.Thread(target=w, daemon=True).start()
+b = tk.Frame(r, bg=BG); b.pack(fill='x', padx=20, pady=20)
+for t, c in (('Pair', pair), ('Start', stream)):
+    tk.Button(b, text=t, font=('DejaVu Sans', 24), bg=ACC, fg='white', relief='flat', height=2, command=c).pack(side='left', expand=True, fill='x', padx=8)
+say('Laptop: install Sunshine + a virtual display (800x1280), then Pair once and Start.\nUSB cable = lowest latency (laptop IP is detected).')
+r.mainloop()

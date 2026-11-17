@@ -1,0 +1,17 @@
+[Unit]
+Description=gta2: X session (launcher) on fb0
+After=gta2-fbinit.service systemd-user-sessions.service
+Wants=gta2-fbinit.service
+Conflicts=getty@tty1.service
+[Service]
+User=gta2
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+WorkingDirectory=/home/gta2
+ExecStart=/usr/bin/xinit /usr/local/bin/gta2-session -- :0 vt1 -nolisten tcp -keeptty -nocursor
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

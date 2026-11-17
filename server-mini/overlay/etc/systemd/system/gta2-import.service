@@ -1,0 +1,8 @@
+[Unit]
+Description=gta2: import ssh keys / Wi-Fi from /userdata/gta2srv
+Before=NetworkManager.service ssh.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gta2-import.sh
+[Install]
+WantedBy=multi-user.target

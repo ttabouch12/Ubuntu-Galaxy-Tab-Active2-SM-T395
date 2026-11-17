@@ -1,0 +1,3 @@
+# gta2srv: / is /userdata/gta2srv/rootfs.img (loop, mounted by initrd); /userdata is the whole data partition
+/dev/mmcblk0p19 /vendor ext4 ro,nofail 0 0
+tmpfs /tmp tmpfs defaults,nosuid,nodev,size=256M 0 0

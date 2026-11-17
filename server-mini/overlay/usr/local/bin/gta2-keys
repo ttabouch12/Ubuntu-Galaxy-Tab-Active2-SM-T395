@@ -1,0 +1,48 @@
+#!/usr/bin/python3
+# gta2srv hardware keys (runs inside the X session as the desktop user)
+#  POWER: screen off/on   VOL+/VOL-: brightness   HOME: back to launcher
+#  BACK: Escape            RECENTS: on-screen keyboard on/off
+import os, struct, glob, select, subprocess, fcntl, time
+BL = glob.glob('/sys/class/backlight/*')[0]
+MAX = int(open(BL + '/max_brightness').read())
+def devs():
+    out = []
+    for d in glob.glob('/sys/class/input/event*'):
+        try: n = open(d + '/device/name').read().strip()
+        except OSError: continue
+        if n in ('gpio_keys', 'sec_touchscreen'):
+            out.append(open('/dev/input/' + os.path.basename(d), 'rb', buffering=0))
+    return out
+def bl(v=None):
+    if v is None: return int(open(BL + '/brightness').read())
+    v = max(5, min(MAX, v))
+    subprocess.call(['sudo', '-n', 'sh', '-c', 'echo %d > %s/brightness' % (v, BL)])
+screen_on, saved = True, None
+def screen(on):
+    global screen_on, saved
+    if on:
+        subprocess.call(['sudo', '-n', 'python3', '/usr/local/sbin/gta2-fbinit.py'])
+        bl(saved or MAX // 2)
+    else:
+        saved = bl(); bl(5)
+        subprocess.call(['sudo', '-n', 'sh', '-c', 'echo 0 > %s/brightness; echo 1 > /sys/class/graphics/fb0/blank' % BL])
+    screen_on = on
+def x(*a): subprocess.Popen(['xdotool'] + list(a))
+def kbd():
+    if subprocess.call(['pkill', '-x', 'matchbox-keyboa']) != 0:
+        subprocess.Popen(['matchbox-keyboard'])
+fs = devs()
+while True:
+    r, _, _ = select.select(fs, [], [])
+    for f in r:
+        ev = f.read(24)
+        if len(ev) < 24: continue
+        _, _, t, c, v = struct.unpack('qqHHi', ev)
+        if t != 1 or v != 1: continue
+        if c == 116: screen(not screen_on)
+        elif not screen_on: continue
+        elif c == 115: bl(bl() + MAX // 10)
+        elif c == 114: bl(bl() - MAX // 10)
+        elif c in (172, 102): x('search', '--name', '^gta2-launcher$', 'windowactivate')
+        elif c == 158: x('key', 'Escape')
+        elif c == 254: kbd()
