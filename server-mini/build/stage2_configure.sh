@@ -33,7 +33,7 @@ echo 'gta2 ALL=(ALL) NOPASSWD:ALL' > $R/etc/sudoers.d/gta2; chmod 440 $R/etc/sud
 printf 'allowed_users=anybody\nneeds_root_rights=yes\n' > $R/etc/X11/Xwrapper.config
 chroot $R update-alternatives --set iptables /usr/sbin/iptables-legacy
 chroot $R update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
-chroot $R systemctl enable gta2-import gta2-wlan gta2-usbnet gta2-fbinit gta2-gui gta2-portainer docker NetworkManager ssh
+chroot $R systemctl enable gta2-cpu gta2-import gta2-wlan gta2-usbnet gta2-fbinit gta2-gui gta2-portainer docker NetworkManager ssh
 chroot $R systemctl disable getty@tty1 2>/dev/null
 chroot $R systemctl mask systemd-networkd-wait-online NetworkManager-wait-online ModemManager 2>/dev/null
 chroot $R systemctl set-default multi-user.target

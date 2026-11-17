@@ -1,0 +1,11 @@
+[Unit]
+Description=gta2: all 8 cores online at the full OC clock (1.79 GHz)
+# Samsung's hotplug governor parks cores 4-7 when idle and brings them back capped at 1.69 GHz.
+# Idle cores still enter cpuidle (WFI/power-down), so keeping them online costs little.
+# To go back to Samsung's behaviour: systemctl disable --now gta2-cpu && reboot
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo 0 > /sys/power/cpuhotplug/enabled; sleep 1; for c in 4 5 6 7; do echo 1 > /sys/devices/system/cpu/cpu$c/online; done; sleep 1; for p in /sys/devices/system/cpu/cpu[04]/cpufreq; do cat $p/cpuinfo_max_freq > $p/scaling_max_freq; done; true'
+[Install]
+WantedBy=multi-user.target

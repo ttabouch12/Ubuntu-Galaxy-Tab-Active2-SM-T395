@@ -36,7 +36,7 @@ You need **TWRP** and the **LineageOS 20 OC ROM installed once** (linked above).
 reads the Wi-Fi firmware from that ROM's vendor partition, so flash LineageOS first if the tablet still
 runs stock Samsung firmware.
 
-1. Download `ubuntu-server-mini-24.04-gtactive2lte-*.zip` from the [Releases](../../releases).
+1. Download the latest `ubuntu-server-mini-*.zip` from the [Releases](../../releases).
 2. Boot TWRP (power off, then hold **Power + Volume Up**).
 3. **Wipe > Format Data** and type `yes`. This erases the tablet, back up first.
 4. Copy the zip to the tablet (`adb push`, MTP or a microSD card) and **Install** it.

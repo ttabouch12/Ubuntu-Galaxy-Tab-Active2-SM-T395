@@ -16,6 +16,7 @@ always-on server with a touch screen. Install and first steps are in the [main R
 | Server | OpenSSH, Docker 29 (`vfs` storage, data in `/data/gta2srv/docker`), Portainer CE |
 | Second screen | moonlight-embedded (SDL, software H.264 decode) |
 | Memory | 512 MB zram swap, volatile journal (32 MB) |
+| CPU | all 8 cores kept online at the OC max 1.79 GHz (`gta2-cpu.service`; Samsung's hotplug parked cores 4-7 and capped them at 1.69 GHz). Idle cores still use cpuidle. |
 
 Measured on the tablet: **~240 MB RAM used** with the launcher on screen (Ubuntu Touch: 1.33 GB),
 ~280 MB with Portainer running, 830 MB on disk, boot 12-19 s (systemd-analyze), Docker containers start in ~1 s.
