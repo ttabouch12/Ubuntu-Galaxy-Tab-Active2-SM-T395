@@ -1,0 +1,7 @@
+[Unit]
+Description=gta2: status dashboard request
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/gta2-dash
+StandardInput=socket
+StandardOutput=socket
+SupplementaryGroups=docker

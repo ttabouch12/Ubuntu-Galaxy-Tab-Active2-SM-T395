@@ -1,0 +1,14 @@
+#!/bin/sh
+# gta2-reboot [system|recovery|download|poweroff]
+# Samsung S-Boot reads the reboot reason from the kernel restart command ("recovery" = TWRP,
+# "download" = Odin mode). systemd does not pass it through here, so the syscall is made directly.
+M=${1:-system}
+case "$M" in
+  system) exec systemctl reboot ;;
+  poweroff) touch /userdata/gta2srv/.poweroff; sync; exec systemctl poweroff ;;  # flag: stay off in charger mode (gta2-lpm)
+  recovery|download) ;;
+  *) echo "usage: gta2-reboot [system|recovery|download|poweroff]"; exit 1 ;;
+esac
+systemctl stop gta2-gui docker.service docker.socket containerd 2>/dev/null
+sync; mount -o remount,ro /userdata 2>/dev/null; sync
+exec python3 -c "import ctypes,sys; ctypes.CDLL(None).syscall(142, 0xfee1dead, 672274793, 0xA1B2C3D4, sys.argv[1].encode())" "$M"

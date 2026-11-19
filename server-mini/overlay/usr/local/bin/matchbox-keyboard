@@ -1,0 +1,4 @@
+#!/bin/sh
+# gta2srv: on-screen keyboard. Default = gta2-osk (big keys). GTA2_OSK=matchbox -> the stock matchbox-keyboard.
+[ "$GTA2_OSK" = matchbox ] && exec /usr/bin/matchbox-keyboard --fontptsize 22 "$@"
+exec python3 /usr/local/bin/gta2-osk "$@"

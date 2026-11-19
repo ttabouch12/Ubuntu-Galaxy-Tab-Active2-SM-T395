@@ -1,0 +1,109 @@
+#!/bin/sh
+# gta2-thermal: always-boost CPU policy with a 90 C throttle.
+#
+# - Runs both clusters at the top OPP (1794 MHz, boost on mainline).
+# - At >= TRIP (90 C) it steps scaling_max_freq down one OPP every PERIOD s.
+# - At <= TRIP-HYST (85 C) it steps back up, one OPP every PERIOD s.
+# - Never goes below FLOOR.
+# Temperature source, in order:
+#   1. thermal zones whose type looks like the CPU/SoC sensor (max of them)
+#   2. fallback: battery temperature from power_supply (proxy only, trips at BATT_TRIP)
+# On 3.18 the vendor TMU passive trips below TRIP are raised to TRIP so the
+# kernel does not throttle earlier than we do. Critical/hot trips are never touched.
+
+TRIP=${TRIP:-90000}
+HYST=${HYST:-5000}
+BATT_TRIP=${BATT_TRIP:-55000}
+FLOOR=${FLOOR:-1014000}
+PERIOD=${PERIOD:-2}
+C=/sys/devices/system/cpu
+
+log() { echo "gta2-thermal: $*"; }
+
+# boost on (mainline cpufreq-dt); harmless if absent
+[ -w $C/cpufreq/boost ] && echo 1 > $C/cpufreq/boost 2>/dev/null
+# 3.18: Samsung hotplug off so all cores stay online
+for f in /sys/power/cpuhotplug/enabled $C/cpuhotplug/enabled; do
+	[ -w $f ] && echo 0 > $f 2>/dev/null
+done
+for c in $C/cpu[0-7]; do [ -w $c/online ] && echo 1 > $c/online 2>/dev/null; done
+
+POLS=""
+for p in $C/cpufreq/policy*; do [ -d "$p" ] && POLS="$POLS $p"; done
+[ -z "$POLS" ] && for c in 0 4; do [ -d $C/cpu$c/cpufreq ] && POLS="$POLS $C/cpu$c/cpufreq"; done
+[ -z "$POLS" ] && { log "no cpufreq"; exit 0; }
+
+# frequency ladder (high -> low), including boost OPPs
+first=$(echo $POLS | cut -d' ' -f1)
+LADDER=$( { cat $first/scaling_available_frequencies $first/scaling_boost_frequencies 2>/dev/null
+	cut -d' ' -f1 $first/stats/time_in_state 2>/dev/null; } |
+	tr ' ' '\n' | grep -E '^[0-9]+$' | sort -rnu | tr '\n' ' ')
+TOP=$(cat $first/cpuinfo_max_freq)
+LADDER=$(for f in $LADDER; do [ $f -le $TOP ] && echo $f; done | tr '\n' ' ')
+[ -z "$LADDER" ] && LADDER="$TOP 1690000 1586000 1482000 1352000 1248000 1144000 1014000"
+log "policies:$POLS ladder: $LADDER"
+
+setmax() { for p in $POLS; do echo $1 > $p/scaling_max_freq 2>/dev/null; done; }
+
+# temperature zones
+ZONES=""
+for z in /sys/class/thermal/thermal_zone*; do
+	[ -r $z/temp ] || continue
+	t=$(cat $z/type 2>/dev/null)
+	case "$t" in therm_zone0|therm_zone1|*cpu*|*CPU*|*tmu*|*TMU*|*exynos*|*soc*|*SOC*|*ap_therm*|*AP*) ZONES="$ZONES $z";; esac
+done
+BATT=""
+if [ -z "$ZONES" ]; then
+	for b in /sys/class/power_supply/*; do
+		[ "$(cat $b/type 2>/dev/null)" = Battery ] && [ -r $b/temp ] && { BATT=$b/temp; break; }
+	done
+	log "no CPU sensor, battery proxy: ${BATT:-none}"
+else
+	log "zones:$ZONES"
+	# 3.18 vendor TMU: lift early passive trips to TRIP
+	for z in $ZONES; do
+		for tt in $z/trip_point_*_type; do
+			cat "$tt" >/dev/null 2>&1 || continue
+			n=${tt%_type}
+			case "$(cat $tt)" in passive|active)
+				v=$(cat ${n}_temp 2>/dev/null)
+				[ -n "$v" ] && [ "$v" -lt "$TRIP" ] && { echo $TRIP > ${n}_temp; } 2>/dev/null
+			;; esac
+		done
+	done
+fi
+
+readtemp() {
+	m=0
+	if [ -n "$ZONES" ]; then
+		for z in $ZONES; do v=$(cat $z/temp 2>/dev/null); [ -n "$v" ] && [ "$v" -gt "$m" ] && m=$v; done
+		[ "$m" -lt 1000 ] && m=$((m * 1000))	# some drivers report C
+		echo $m
+	elif [ -n "$BATT" ]; then
+		v=$(cat $BATT 2>/dev/null); echo $(( ${v:-0} * 100 ))	# tenths of C -> mC
+	else
+		echo 0
+	fi
+}
+
+T_HI=$TRIP; [ -z "$ZONES" ] && T_HI=$BATT_TRIP
+T_LO=$((T_HI - HYST))
+
+idx=0	# position in ladder, 0 = top
+cap() { echo $LADDER | cut -d' ' -f$((idx + 1)); }
+n=$(echo $LADDER | wc -w)
+setmax $(cap)
+log "start at $(cap) kHz, trip $T_HI mC"
+
+while :; do
+	t=$(readtemp)
+	if [ "$t" -ge "$T_HI" ]; then
+		nxt=$((idx + 1))
+		if [ $nxt -lt $n ] && [ "$(echo $LADDER | cut -d' ' -f$((nxt + 1)))" -ge "$FLOOR" ]; then
+			idx=$nxt; setmax $(cap); log "T=$t throttle -> $(cap)"
+		fi
+	elif [ "$t" -le "$T_LO" ] && [ $idx -gt 0 ]; then
+		idx=$((idx - 1)); setmax $(cap); log "T=$t restore -> $(cap)"
+	fi
+	sleep $PERIOD
+done

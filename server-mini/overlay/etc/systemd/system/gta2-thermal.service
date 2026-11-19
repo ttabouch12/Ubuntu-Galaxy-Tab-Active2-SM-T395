@@ -1,0 +1,10 @@
+[Unit]
+Description=gta2: CPU always at max (boost), step down from 90 C
+After=gta2-cpu.service
+[Service]
+ExecStart=/usr/local/sbin/gta2-thermal
+Restart=always
+RestartSec=5
+Nice=-5
+[Install]
+WantedBy=multi-user.target

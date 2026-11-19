@@ -3,6 +3,45 @@
 Native Ubuntu 24.04 LTS (arm64), **no Android underneath**, built to turn the tablet into a small
 always-on server with a touch screen. Install and first steps are in the [main README](../README.md).
 
+## 1.2 changes
+
+* **Kernel `boot_srv5`:** CPU thermal throttling starts at **90 °C** instead of 76 °C (the trip points come from
+  Samsung's ECT firmware table, the device tree values are ignored, so `exynos_tmu.c` is patched after the ECT is read).
+  `gta2-thermal.service` keeps all cores at the top clock and steps down from 90 °C as a second safety net.
+* **New on-screen keyboard** `gta2-osk` (Tk + xdotool, big keys, S/M/L): full PC layout with an Fn/accents layer,
+  never takes the focus (ICCCM input hint off), a held finger types one key. `matchbox-keyboard` in `/usr/local/bin`
+  starts it, so every existing toggle keeps working (`GTA2_OSK=matchbox` for the old one).
+* **Home key fixed** (`pkill -f` matched its own shell), it also hides the keyboard and closes Portainer.
+* **Charger-mode boots:** S-Boot starts the OS with `androidboot.mode=charger` after a shutdown with the cable in,
+  and Samsung's touch and pen drivers refuse to load then. `gta2-lpm` reboots into a normal boot, unless the user
+  chose Shut down (then: dark screen, off when unplugged, POWER = start).
+* **Touch:** identity calibration matrix (Xorg `Rotate UD` already maps the digitizer).
+* **Settings rewritten:** tabs, finger scrolling everywhere (the Wi-Fi list scrolls now), screensaver, file sharing.
+* **System monitor** (`gta2-sysinfo`), **Docker tile = Portainer full screen** (`gta2-docker`, restarts Portainer
+  if its 5-minute first-setup window expired).
+* **Screensaver** (image, slideshow, clock) in the launcher, idle time taken from the touch screen and keys.
+* **File sharing:** Samba share `\\<ip>\share` + WS-Discovery (`gta2-share`, `gta2-wsdd.service`), folder
+  `/data/gta2srv/share` (kept across reinstalls), also `~/Share`.
+* Image build: overlay files are made world-readable (Windows checkouts had them `0700`).
+
+## 1.1 changes
+
+* **Display:** Xorg blanks/unblanks fb0 when it starts, after which the DECON only scans out again after a fresh
+  `FBIOPUT_VSCREENINFO` + `FBIOPAN_DISPLAY`; the session runs `gta2-fbinit --wake` right after X is up.
+  Screen off/on is done with the backlight only.
+* **Colours:** the DECON window format is R,G,B,X in memory; the kernel now reports red@0 / blue@16 (it reported
+  XRGB, so red and blue were swapped).
+* **Touch:** 180° libinput calibration matrix (Xorg `Rotate UD` does not turn absolute input devices).
+* **Stability:** `/dev/video*` is root-only and the GStreamer v4l2 plugin is diverted: probing the Exynos camera
+  (fimc-is) nodes panics this kernel (`v4l_id`, `gst-plugin-scanner`).
+* **New home screen** (clock, live CPU/RAM/temperature/battery, tiles) that also owns the hardware keys (one process).
+* **Kiosk mode** (`gta2-kiosk`, surf/WebKit) and a **status dashboard** on `:8088` (socket-activated, 0 MB when idle).
+* **Power menu** with TWRP and Download mode: `gta2-reboot recovery|download` issues `reboot(RESTART2, "recovery")`
+  directly (systemd does not pass the argument through on this kernel).
+* **Full on-screen keyboard** layout (numbers, symbols, accented letters: hold **àé**).
+* Image and kernel are now built with **Docker on any PC** (`build/docker/`): the kernel from LineageOS 22.2
+  exynos7870 + the OC patch + the Ubuntu Touch patch + the colour fix, the rootfs in an `arm64` ubuntu:24.04 container.
+
 ## What's in it
 
 | Part | How |
@@ -15,8 +54,9 @@ always-on server with a touch screen. Install and first steps are in the [main R
 | Network | NetworkManager + wpa_supplicant (QCA9377, qcacld driver, firmware from the vendor partition), USB RNDIS gadget with DHCP for the laptop |
 | Server | OpenSSH, Docker 29 (`vfs` storage, data in `/data/gta2srv/docker`), Portainer CE |
 | Second screen | moonlight-embedded (SDL, software H.264 decode) |
+| Files | Samba (SMB2/3) share + wsdd, SFTP via OpenSSH |
 | Memory | 512 MB zram swap, volatile journal (32 MB) |
-| CPU | all 8 cores kept online at the OC max 1.79 GHz (`gta2-cpu.service`; Samsung's hotplug parked cores 4-7 and capped them at 1.69 GHz). Idle cores still use cpuidle. |
+| CPU | all 8 cores kept online at the OC max 1.79 GHz (`gta2-cpu.service`, `gta2-thermal.service`); throttling from 90 °C. Idle cores still use cpuidle. |
 
 Measured on the tablet: **~240 MB RAM used** with the launcher on screen (Ubuntu Touch: 1.33 GB),
 ~280 MB with Portainer running, 830 MB on disk, boot 12-19 s (systemd-analyze), Docker containers start in ~1 s.

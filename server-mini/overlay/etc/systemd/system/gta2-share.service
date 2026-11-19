@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: prepare the file share (folders, smb.conf, default SMB user)
+Before=smbd.service wsdd.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gta2-share init
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: mark this (mainline) boot as good for the initramfs failsafe
+After=ssh.service gta2-usbnet.service network-online.target
+ConditionPathExists=/userdata/gta2srv/ml/tries
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'sleep 30; systemctl is-active -q ssh && echo 0 > /userdata/gta2srv/ml/tries && sync'
+[Install]
+WantedBy=multi-user.target

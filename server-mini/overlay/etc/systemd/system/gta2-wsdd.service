@@ -1,0 +1,10 @@
+[Unit]
+Description=gta2: show the tablet in the Windows "Network" folder (WS-Discovery)
+After=network-online.target smbd.service
+[Service]
+ExecStart=/usr/bin/wsdd --shortlog --hostname gta2srv
+User=nobody
+Group=nogroup
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

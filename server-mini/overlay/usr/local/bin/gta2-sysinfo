@@ -1,0 +1,218 @@
+#!/usr/bin/python3
+# gta2srv system monitor (htop-style): per-core load + clock, temperatures, memory, storage, network, battery,
+# top processes (tap one, then Kill twice), Docker containers. Drag to scroll.
+import tkinter as tk, os, time, threading, socket, glob
+from gta2ui import *
+
+r = tk.Tk(className='gta2-sysinfo'); r.title('gta2-sysinfo'); r.configure(bg=BG); r.attributes('-fullscreen', True)
+install_drag(r)
+top = tk.Frame(r, bg=BG); top.pack(fill='x', pady=(10, 4))
+btn(top, '‹ Back', r.destroy).pack(side='left', padx=10)
+lbl(top, 'System', font=(F, 24, 'bold')).pack(side='left', padx=16)
+hdr = lbl(top, '', fg=DIM, font=(F, 13)); hdr.pack(side='right', padx=12)
+pg = Page(r); pg.pack(fill='both', expand=True)
+P = pg.body
+NC = os.cpu_count() or 8
+
+# ---- CPU
+s = section(P, 'CPU')
+cpu_all = lbl(s, '', bg=CARD, font=(F, 20, 'bold')); cpu_all.pack(anchor='w', padx=12)
+cg = tk.Frame(s, bg=CARD); cg.pack(fill='x', padx=10, pady=(4, 10))
+cores = []
+for i in range(NC):
+    f = tk.Frame(cg, bg=CARD); f.grid(row=i // 2, column=i % 2, sticky='ew', padx=4, pady=3); cg.columnconfigure(i % 2, weight=1)
+    l = lbl(f, 'cpu%d' % i, bg=CARD, font=(MONO, 13), width=18, anchor='w'); l.pack(side='top', anchor='w')
+    b = bar(f, 340, 14); b.pack(fill='x')
+    cores.append((l, b))
+cpu_extra = lbl(s, '', bg=CARD, fg=DIM, font=(MONO, 12), justify='left'); cpu_extra.pack(anchor='w', padx=12, pady=(0, 10))
+
+# ---- temps + battery
+s = section(P, 'TEMPERATURE  ·  BATTERY')
+tl = lbl(s, '', bg=CARD, font=(MONO, 14), justify='left', anchor='w'); tl.pack(fill='x', padx=12, pady=(0, 10))
+
+# ---- memory + storage
+s = section(P, 'MEMORY  ·  STORAGE')
+mem_rows = {}
+for k in ('RAM', 'Swap (zram)', '/  (rootfs)', '/userdata'):
+    f = tk.Frame(s, bg=CARD); f.pack(fill='x', padx=12, pady=3)
+    l = lbl(f, k, bg=CARD, font=(MONO, 13), anchor='w'); l.pack(anchor='w')
+    b = bar(f, 700, 16); b.pack(fill='x')
+    mem_rows[k] = (l, b)
+tk.Frame(s, bg=CARD, height=8).pack()
+
+# ---- network
+s = section(P, 'NETWORK')
+nl = lbl(s, '', bg=CARD, font=(MONO, 13), justify='left', anchor='w'); nl.pack(fill='x', padx=12, pady=(0, 10))
+
+# ---- processes
+s = section(P, 'PROCESSES  (tap one to select)')
+plb = tk.Listbox(s, font=(MONO, 13), height=14, bg=CARD2, fg=FG, selectbackground=ACC, activestyle='none', bd=0,
+                 highlightthickness=0, exportselection=0)
+plb.pack(fill='x', padx=10)
+pids = []
+touch_list(plb)
+pk = tk.Frame(s, bg=CARD); pk.pack(fill='x', padx=6, pady=(6, 12))
+pmsg = lbl(pk, '', bg=CARD, fg=WARN, font=(F, 13)); pmsg.pack(side='left', padx=6)
+sort = {'k': 'pcpu'}
+
+
+def kill():
+    i = plb.curselection()
+    if not i or i[0] >= len(pids) or pids[i[0]] is None:
+        return pmsg.config(text='select a process')
+    pid = pids[i[0]]
+    if getattr(kill, 'armed', None) != pid:
+        kill.armed = pid; return pmsg.config(text='tap Kill again to stop pid %s' % pid)
+    kill.armed = None
+    pmsg.config(text=sh(['sudo', '-n', 'kill', pid]) or 'sent TERM to %s' % pid)
+
+
+btn(pk, 'Kill', kill, bg='#8e1519').pack(side='right', padx=4)
+btn(pk, 'Sort MEM', lambda: sort.update(k='rss'), bg=CARD2).pack(side='right', padx=4)
+btn(pk, 'Sort CPU', lambda: sort.update(k='pcpu'), bg=CARD2).pack(side='right', padx=4)
+
+# ---- docker
+s = section(P, 'DOCKER')
+dl = lbl(s, 'loading...', bg=CARD, font=(MONO, 12), justify='left', anchor='w'); dl.pack(fill='x', padx=12, pady=(0, 12))
+
+prev = {'cpu': None, 'net': None, 't': 0}
+
+
+def cpustat():
+    out = {}
+    for l in open('/proc/stat'):
+        if l.startswith('cpu'):
+            p = l.split(); a = list(map(int, p[1:8])); out[p[0]] = (a[3] + a[4], sum(a))
+    return out
+
+
+def fmt(b):
+    for u in ('B', 'K', 'M', 'G', 'T'):
+        if b < 1024:
+            return '%.0f%s' % (b, u) if u in 'BK' else '%.1f%s' % (b, u)
+        b /= 1024
+    return '%.1fP' % b
+
+
+def tick():
+    now = time.time()
+    st = cpustat()
+    pc = prev['cpu']
+    if pc:
+        def pct(k):
+            if k not in st or k not in pc:
+                return None
+            di, dt = st[k][0] - pc[k][0], st[k][1] - pc[k][1]
+            return 100 * (1 - di / dt) if dt > 0 else 0
+        tot = pct('cpu') or 0
+        la = open('/proc/loadavg').read().split()[:3]
+        cpu_all.config(text='%3.0f %%   load %s' % (tot, ' '.join(la)))
+        for i, (l, b) in enumerate(cores):
+            p = pct('cpu%d' % i)
+            fr = rd('/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq' % i, '0')
+            fr = '%4d MHz' % (int(fr) // 1000) if fr.isdigit() else ' off'
+            if p is None:
+                l.config(text='cpu%d  offline' % i, fg=DIM); b.set(0)
+            else:
+                l.config(text='cpu%d %3.0f%%  %s' % (i, p, fr), fg=FG); b.set(p / 100)
+    prev['cpu'] = st
+    g = rd('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor')
+    mx = [rd('/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq' % c, '0') for c in (0, 4)]
+    cpu_extra.config(text='governor %s   max %s MHz   online %s   boost %s' % (
+        g, '/'.join(str(int(m) // 1000) for m in mx if m.isdigit()), rd('/sys/devices/system/cpu/online'),
+        rd('/sys/devices/system/cpu/cpufreq/boost', 'n/a')))
+    # temps
+    t = []
+    for z in sorted(glob.glob('/sys/class/thermal/thermal_zone*')):
+        v = rd(z + '/temp', '')
+        if v.lstrip('-').isdigit():
+            v = int(v); v = v / 1000 if abs(v) > 1000 else v
+            t.append('%-14s %5.1f °C' % (rd(z + '/type')[:14], v))
+    B = next((p for p in glob.glob('/sys/class/power_supply/*') if rd(p + '/type') == 'Battery'), None)
+    if B:
+        bt = rd(B + '/temp', '')
+        bt = '%.1f °C' % (int(bt) / 10) if bt.lstrip('-').isdigit() else '?'
+        v = rd(B + '/voltage_now', ''); v = '%.2f V' % (int(v) / 1e6) if v.isdigit() else '?'
+        c = rd(B + '/current_now', rd(B + '/current_avg', ''))
+        c = '%d mA' % (int(c) / 1000) if c.lstrip('-').isdigit() else '?'
+        t.append('battery        %s%%  %s  %s' % (rd(B + '/capacity'), rd(B + '/status'), rd(B + '/health', '')))
+        t.append('               %s  %s  %s' % (bt, v, c))
+    tl.config(text='\n'.join(t) or 'no sensors')
+    # memory
+    m = {}
+    for l in open('/proc/meminfo'):
+        k, v = l.split(':'); m[k] = int(v.split()[0]) * 1024
+    used = m['MemTotal'] - m['MemAvailable']
+    mem_rows['RAM'][0].config(text='RAM   %s used / %s   (cache %s)' % (fmt(used), fmt(m['MemTotal']), fmt(m.get('Cached', 0))))
+    mem_rows['RAM'][1].set(used / m['MemTotal'])
+    su = m.get('SwapTotal', 0) - m.get('SwapFree', 0)
+    mem_rows['Swap (zram)'][0].config(text='Swap  %s / %s' % (fmt(su), fmt(m.get('SwapTotal', 0))))
+    mem_rows['Swap (zram)'][1].set(su / m['SwapTotal'] if m.get('SwapTotal') else 0)
+    for k, path in (('/  (rootfs)', '/'), ('/userdata', '/userdata')):
+        try:
+            v = os.statvfs(path); tot = v.f_blocks * v.f_frsize; fr = v.f_bavail * v.f_frsize
+            mem_rows[k][0].config(text='%-12s %s used / %s   (%s free)' % (path, fmt(tot - fr), fmt(tot), fmt(fr)))
+            mem_rows[k][1].set((tot - fr) / tot if tot else 0)
+        except OSError:
+            pass
+    # network
+    nd = {}
+    for l in open('/proc/net/dev').readlines()[2:]:
+        n, d = l.split(':'); d = d.split(); nd[n.strip()] = (int(d[0]), int(d[8]))
+    dt = now - prev['t'] if prev['t'] else 0
+    lines = []
+    ips = {}
+    for l in sh("ip -4 -o addr").splitlines():
+        p = l.split(); ips[p[1]] = p[3]
+    wl = sh("nmcli -t -f ACTIVE,SSID,SIGNAL dev wifi 2>/dev/null | grep '^yes'").split(':')
+    for n, (rx, tx) in sorted(nd.items()):
+        if n == 'lo' or n.startswith(('veth', 'br-')) or (n not in ips and not n.startswith('wlan')):
+            continue
+        rate = ''
+        if prev['net'] and n in prev['net'] and dt > 0:
+            rate = '↓%s/s ↑%s/s' % (fmt((rx - prev['net'][n][0]) / dt), fmt((tx - prev['net'][n][1]) / dt))
+        lines.append('%-8s %-18s %s' % (n, ips.get(n, '-'), rate))
+        lines.append('         total ↓%s ↑%s%s' % (fmt(rx), fmt(tx), ('   %s %s%%' % (wl[1], wl[2])) if n.startswith('wlan') and len(wl) > 2 else ''))
+    prev['net'] = nd; prev['t'] = now
+    nl.config(text='\n'.join(lines))
+    # processes
+    out = sh(['ps', '-eo', 'pid,user:8,pcpu,pmem,rss,comm', '--sort=-' + sort['k']]).splitlines()[1:15]
+    cur = plb.curselection(); keep = pids[cur[0]] if cur and cur[0] < len(pids) else None
+    plb.delete(0, 'end'); pids[:] = []
+    plb.insert('end', '  PID USER      CPU%  MEM%    RSS  COMMAND'); pids.append(None)
+    for l in out:
+        p = l.split(None, 5)
+        if len(p) < 6 or p[5] == 'ps':
+            continue
+        pids.append(p[0])
+        plb.insert('end', '%5s %-8s %5s %5s %6s  %s' % (p[0], p[1][:8], p[2], p[3], fmt(int(p[4]) * 1024), p[5][:20]))
+        if p[0] == keep:
+            plb.selection_set('end')
+    plb.itemconfigure(0, fg=DIM)
+    up = int(float(rd('/proc/uptime', '0 0').split()[0]))
+    hdr.config(text='%s · up %dd %02d:%02d' % (socket.gethostname(), up // 86400, up % 86400 // 3600, up % 3600 // 60))
+    r.after(2000, tick)
+
+
+def docker_loop():
+    while True:
+        o = sh(['docker', 'ps', '-a', '--format', '{{.Names}}\t{{.Status}}\t{{.Image}}'], 8)
+        s_ = sh(['docker', 'stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'], 15)
+        stats = {l.split('\t')[0]: l.split('\t')[1:] for l in s_.splitlines() if l.count('\t') == 2}
+        rows = []
+        for l in o.splitlines():
+            p = l.split('\t')
+            if len(p) < 3:
+                continue
+            x = stats.get(p[0], ['', ''])
+            rows.append('%-16s %-7s %s\n   %s  %s' % (p[0][:16], x[0], x[1].split(' /')[0], p[1][:28], p[2][:30]))
+        txt = '\n'.join(rows) if rows else (o or 'no containers')
+        try:
+            r.after(0, lambda t=txt: dl.config(text=t))
+        except RuntimeError:
+            return
+        time.sleep(10)
+
+
+threading.Thread(target=docker_loop, daemon=True).start()
+tick(); r.mainloop()

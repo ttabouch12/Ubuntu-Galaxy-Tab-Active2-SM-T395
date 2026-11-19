@@ -1,0 +1,55 @@
+#!/usr/bin/python3
+# gta2-lpm: Samsung S-Boot starts the OS in "charger" mode (androidboot.mode=charger) when the tablet was
+# shut down with the cable plugged in. In that mode the kernel does not load touch or pen.
+#  * not asked to be off (no flag): reboot once into a normal boot (max 2 tries in a row, no boot loop)
+#  * asked to be off (gta2-reboot poweroff wrote the flag): screen dark, power off when the cable is pulled,
+#    POWER key = start normally
+import os, glob, struct, select, subprocess, time
+FLAG = '/userdata/gta2srv/.poweroff'
+TRIES = '/userdata/gta2srv/.lpm_tries'
+
+
+def rd(p, d=''):
+    try:
+        return open(p).read().strip()
+    except OSError:
+        return d
+
+
+lpm = 'androidboot.mode=charger' in rd('/proc/cmdline')
+if not lpm:
+    for f in (FLAG, TRIES):
+        if os.path.exists(f):
+            os.remove(f)
+    raise SystemExit(0)
+
+if not os.path.exists(FLAG):
+    n = int(rd(TRIES, '0') or 0)
+    if n < 2:
+        open(TRIES, 'w').write(str(n + 1)); os.sync()
+        subprocess.call(['systemctl', 'reboot'])
+    raise SystemExit(0)  # gave up: boot on (without touch) rather than loop
+
+subprocess.call(['systemctl', 'stop', 'gta2-gui'])
+for b in glob.glob('/sys/class/backlight/*/brightness'):
+    open(b, 'w').write('0')
+
+
+def plugged():
+    return any(rd(p + '/online') == '1' for p in glob.glob('/sys/class/power_supply/*')
+               if rd(p + '/type') in ('USB', 'Mains', 'USB_DCP', 'USB_CDP', 'Wireless'))
+
+
+keys = []
+for d in glob.glob('/sys/class/input/event*'):
+    if rd(d + '/device/name') in ('gpio_keys', 'gpio-keys'):
+        keys.append(open('/dev/input/' + os.path.basename(d), 'rb', buffering=0))
+while True:
+    if not plugged():
+        os.sync(); subprocess.call(['systemctl', 'poweroff']); time.sleep(30)
+    for f in (select.select(keys, [], [], 5)[0] if keys else time.sleep(5) or []):
+        ev = f.read(24)
+        if len(ev) == 24:
+            _, _, t, c, v = struct.unpack('qqHHi', ev)
+            if t == 1 and c == 116 and v == 1:
+                os.remove(FLAG); os.sync(); subprocess.call(['systemctl', 'reboot']); time.sleep(30)

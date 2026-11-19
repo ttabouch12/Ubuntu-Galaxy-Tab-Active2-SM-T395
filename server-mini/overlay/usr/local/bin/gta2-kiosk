@@ -1,0 +1,8 @@
+#!/bin/sh
+# gta2srv kiosk: show one web page fullscreen (no login, no browser UI). HOME key returns to the launcher.
+# (WebKit sandbox needs user namespaces, which this kernel lacks: show only pages you trust.)
+# URL: ~/.config/gta2/kiosk_url (default: the built-in status dashboard on :8088)
+U=$(cat ~/.config/gta2/kiosk_url 2>/dev/null); U=${U:-http://localhost:8088}
+pkill -x matchbox-keyboa 2>/dev/null
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 GST_PLUGIN_FEATURE_RANK=v4l2src:NONE
+exec surf -F -k "$U"

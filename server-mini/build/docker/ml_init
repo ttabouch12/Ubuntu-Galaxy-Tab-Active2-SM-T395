@@ -1,0 +1,26 @@
+#!/bin/busybox sh
+# gta2srv mainline initramfs
+#  - SM5705 MUIC: route D+/D- to USB (S-Boot leaves it on UART)
+#  - failsafe: counts boot attempts in /data/gta2srv/ml/tries; the booted system resets it (gta2-bootok).
+#    3rd attempt without success -> extlinux.conf is renamed -> U-Boot finds nothing -> reboots into TWRP.
+#  - loop-mount /data/gta2srv/rootfs.img and switch_root
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t devtmpfs dev /dev
+k() { echo "gta2srv: $*" > /dev/kmsg; }
+k initramfs
+for b in /sys/bus/i2c/devices/i2c-*; do readlink -f $b | grep -q 13870000 && BUS=${b##*-}; done
+[ -n "$BUS" ] && { i2cset -y $BUS 0x25 0x13 0x24 && k "muic usb (i2c-$BUS)"; }
+for i in $(seq 1 100); do [ -b /dev/mmcblk0p24 ] && break; sleep 0.1; done
+fail() { k "$*"; sleep 5; reboot -f; }
+mount -t ext4 /dev/mmcblk0p24 /data || fail "no userdata"
+T=/data/gta2srv/ml/tries; n=$(cat $T 2>/dev/null); n=$(( ${n:-0} + 1 )); echo $n > $T; sync
+k "boot attempt $n"
+if [ $n -gt 2 ]; then
+  k "too many failed boots -> disarm extlinux, next boot goes to TWRP"
+  echo 0 > $T; mv /data/extlinux/extlinux.conf /data/extlinux/extlinux.conf.failed; sync; umount /data; reboot -f
+fi
+mount -o loop,noatime /data/gta2srv/rootfs.img /newroot || fail "rootfs mount failed"
+mkdir -p /newroot/userdata; mount --move /data /newroot/userdata
+mount --move /dev /newroot/dev; umount /proc /sys 2>/dev/null
+exec switch_root /newroot /sbin/init

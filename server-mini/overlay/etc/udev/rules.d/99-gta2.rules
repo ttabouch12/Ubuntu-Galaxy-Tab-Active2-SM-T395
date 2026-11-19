@@ -1,5 +1,7 @@
-# touch + pen: panel is rotated 180 deg
-SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="sec_touchscreen|sec_e-pen", ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 -1 1"
+# touch + pen: Xorg "Rotate UD" already maps the digitizer correctly -> identity
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="sec_touchscreen|sec_e-pen", ENV{LIBINPUT_CALIBRATION_MATRIX}="1 0 0 0 1 0"
 # sensors etc. are not input devices for X
 SUBSYSTEM=="input", ATTRS{name}=="*_sensor|meta_event|SignificantMotionDetector|hall|grip_sensor*", ENV{LIBINPUT_IGNORE_DEVICE}="1"
 SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
+# camera nodes: probing the Exynos fimc-is video devices panics this kernel (gst-plugin-scanner, v4l_id) -> nobody but root
+SUBSYSTEM=="video4linux", MODE="0600", OWNER="root", GROUP="root"

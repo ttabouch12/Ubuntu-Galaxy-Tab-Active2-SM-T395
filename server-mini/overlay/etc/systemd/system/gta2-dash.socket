@@ -1,0 +1,7 @@
+[Unit]
+Description=gta2: status dashboard on :8088 (no login)
+[Socket]
+ListenStream=8088
+Accept=yes
+[Install]
+WantedBy=sockets.target

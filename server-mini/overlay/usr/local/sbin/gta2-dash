@@ -1,0 +1,39 @@
+#!/usr/bin/python3
+# gta2srv status dashboard, one HTTP request per process (systemd socket activation, Accept=yes): 0 MB when idle.
+# http://<tablet>:8088  - no login, meant for the kiosk screen and LAN monitoring.
+import sys, os, time, subprocess, socket, html
+def rd(p, d='?'):
+    try: return open(p).read().strip()
+    except OSError: return d
+try: sys.stdin.readline()
+except Exception: pass
+m = dict(l.split(':', 1) for l in open('/proc/meminfo'))
+kb = lambda k: int(m[k].split()[0]) // 1024
+tot, av = kb('MemTotal'), kb('MemAvailable')
+la = rd('/proc/loadavg').split()[:3]
+up = int(float(rd('/proc/uptime', '0').split()[0]))
+tz = rd('/sys/class/thermal/thermal_zone0/temp', '0'); tz = int(tz) // 1000 if tz.isdigit() else 0
+st = os.statvfs('/userdata'); dfree = st.f_bavail * st.f_frsize // 2**30; dtot = st.f_blocks * st.f_frsize // 2**30
+B = '/sys/class/power_supply/battery/'
+def sh(c):
+    try: return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=4).stdout.strip()
+    except Exception: return ''
+ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{print $2\" \"$4}'")
+dk = sh("docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null")
+def card(k, v, pct=None):
+    bar = '<div class=b><i style="width:%d%%"></i></div>' % pct if pct is not None else ''
+    return '<div class=c><div class=k>%s</div><div class=v>%s</div>%s</div>' % (k, v, bar)
+rows = ''.join('<tr><td>%s</td><td>%s</td><td>%s</td></tr>' % tuple(html.escape(x) for x in (l.split('|') + ['', ''])[:3]) for l in dk.splitlines()) or '<tr><td colspan=3>no containers</td></tr>'
+body = f'''<!doctype html><html><head><meta charset=utf-8><meta http-equiv=refresh content=5><meta name=viewport content="width=device-width">
+<title>{socket.gethostname()}</title><style>
+body{{margin:0;background:#0d1117;color:#e6edf3;font:16px DejaVu Sans,sans-serif;padding:24px}}h1{{font-size:44px;margin:0}}.s{{color:#8b949e;margin-bottom:18px}}
+.g{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.c{{background:#161b22;border-radius:12px;padding:14px}}.k{{color:#8b949e;font-size:13px}}.v{{font-size:28px;font-weight:bold}}
+.b{{height:6px;background:#30363d;border-radius:3px;margin-top:8px}}.b i{{display:block;height:6px;background:#2f81f7;border-radius:3px}}
+table{{width:100%;border-collapse:collapse;margin-top:16px;background:#161b22;border-radius:12px}}td{{padding:9px 12px;border-bottom:1px solid #21262d;font-size:14px}}pre{{color:#8b949e}}</style></head><body>
+<h1>{time.strftime('%H:%M')}</h1><div class=s>{socket.gethostname()} &middot; up {up//86400}d {up%86400//3600}h {up%3600//60}m</div><div class=g>
+{card('CPU load', ' '.join(la))}{card('Memory', f'{tot-av} / {tot} MB', 100*(tot-av)//tot)}
+{card('Temperature', f'{tz} &deg;C', min(100, tz))}{card('Battery', rd(B+'capacity')+'% '+rd(B+'status'), int(rd(B+'capacity','0')))}
+{card('Disk /userdata', f'{dtot-dfree} / {dtot} GB', 100*(dtot-dfree)//max(1,dtot))}{card('Containers', str(len(dk.splitlines()) if dk else 0))}
+</div><table>{rows}</table><pre>{html.escape(ips)}</pre></body></html>'''
+b = body.encode()
+sys.stdout.buffer.write(b'HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' % len(b) + b)

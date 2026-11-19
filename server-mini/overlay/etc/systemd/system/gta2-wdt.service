@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: pet the hardware watchdog (mainline: armed at boot, resets the tablet if it hangs)
+ConditionPathExists=/dev/watchdog
+ConditionKernelVersion=>=6
+[Service]
+ExecStart=/bin/sh -c 'exec 3>/dev/watchdog; while :; do echo k >&3; sleep 10; done'
+Restart=always
+[Install]
+WantedBy=multi-user.target

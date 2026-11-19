@@ -1,34 +1,235 @@
 #!/usr/bin/python3
-# gta2srv launcher: Second screen / Terminal / Settings + live status (IPs, battery, Docker)
-import tkinter as tk, subprocess, socket, glob, os
-BG, FG, ACC = '#101418', '#e8eef2', '#2b6cb0'
-def sh(c):
-    try: return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=5).stdout.strip()
-    except Exception: return ''
-def ip(dev):
-    return sh("ip -4 -o addr show dev %s 2>/dev/null | awk '{print $4}' | cut -d/ -f1" % dev)
-def battery():
-    b = '/sys/class/power_supply/battery/'
-    try: return '%s%% %s' % (open(b + 'capacity').read().strip(), open(b + 'status').read().strip())
-    except OSError: return '?'
-r = tk.Tk(className='gta2-launcher'); r.title('gta2-launcher')
-r.configure(bg=BG); r.attributes('-fullscreen', True)
-tk.Label(r, text='GTA2 server', font=('DejaVu Sans', 30, 'bold'), bg=BG, fg=FG).pack(pady=(50, 10))
-st = tk.Label(r, font=('DejaVu Sans Mono', 15), bg=BG, fg='#9fb3c8', justify='left'); st.pack(pady=10)
-def run(cmd): subprocess.Popen(cmd, shell=True)
-for label, cmd in (('Second screen', 'gta2-moonlight'),
-                   ('Terminal', "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg black -fg white -e bash -l"),
-                   ('Settings', 'gta2-settings')):
-    tk.Button(r, text=label, font=('DejaVu Sans', 26), bg=ACC, fg='white', activebackground='#3c82c8',
-              relief='flat', height=2, command=lambda c=cmd: run(c)).pack(fill='x', padx=60, pady=18)
-tk.Label(r, text='POWER screen off/on · VOL brightness · HOME this screen\nBACK Esc · RECENTS keyboard',
-         font=('DejaVu Sans', 13), bg=BG, fg='#6b7d8f').pack(side='bottom', pady=30)
+# gta2srv home screen: clock, live status, app tiles, screensaver. Also owns the hardware keys (one process, less RAM):
+#   POWER screen off/on   VOL+/- brightness   HOME this screen   BACK Esc   RECENTS keyboard
+import tkinter as tk, subprocess, glob, os, struct, select, threading, time, socket, json, random
+from gta2ui import BG, CARD, FG, DIM, ACC, F, rd, sh
+CFG = os.path.expanduser('~/.config/gta2'); SS = CFG + '/screensaver.json'; SSNOW = CFG + '/screensaver_now'
+SSDIR = '/userdata/gta2srv/share/Screensaver'
+
+
+def run(c): subprocess.Popen(c, shell=True, start_new_session=True)
+
+
+def app(cls, cmd):  # bring an already running app to the front instead of starting a second copy
+    run('xdotool search --classname "^%s$" windowactivate 2>/dev/null || %s' % (cls, cmd))
+
+
+BL = (glob.glob('/sys/class/backlight/*') or [''])[0]
+MAX = int(rd(BL + '/max_brightness', '255'))
+
+
+def bl(v=None):
+    if v is None:
+        return int(rd(BL + '/brightness', '100'))
+    v = max(5, min(MAX, v)); subprocess.call(['sudo', '-n', 'sh', '-c', 'echo %d > %s/brightness' % (v, BL)])
+
+
+state = {'on': True, 'saved': None, 'last': time.time()}
+
+
+def screen(on):
+    if on == state['on']:
+        return
+    if on:
+        bl(state['saved'] or MAX // 2)
+    else:  # backlight only: powering DECON down/up without hwcomposer is not reliable on this kernel
+        state['saved'] = bl(); subprocess.call(['sudo', '-n', 'sh', '-c', 'echo 0 > %s/brightness' % BL])
+    state['on'] = on
+
+
+def input_devs():
+    fs = []
+    for d in glob.glob('/sys/class/input/event*'):
+        n = rd(d + '/device/name', '').lower()
+        if n in ('gpio_keys', 'gpio-keys') or 'touch' in n or 'fts' in n or 'key' in n:
+            try:
+                fs.append(open('/dev/input/' + os.path.basename(d), 'rb', buffering=0))
+            except OSError:
+                pass
+    return fs
+
+
+def keys():
+    fs = input_devs()
+    while fs:
+        for f in select.select(fs, [], [])[0]:
+            ev = f.read(24)
+            if len(ev) < 24:
+                continue
+            _, _, t, c, v = struct.unpack('qqHHi', ev)
+            state['last'] = time.time()
+            if saver.up and t == 1 and v == 1 and c != 116:
+                r.after(0, saver.hide)
+                continue
+            if t != 1 or v != 1:
+                continue
+            if c == 116:
+                on = not state['on']; screen(on)
+                if on and saver.up:
+                    r.after(0, saver.hide)
+            elif not state['on']:
+                continue
+            elif c == 115: bl(bl() + MAX // 10)
+            elif c == 114: bl(bl() - MAX // 10)
+            elif c in (172, 102):
+                home()
+            elif c == 158: run('xdotool key Escape')
+            elif c == 254: run('pkill -x matchbox-keyboa || matchbox-keyboard')
+
+
+def home():  # HOME: close Portainer (big), hide the keyboard, show the launcher.
+    # ("[s]urf" so pkill -f does not match the shell running this command line)
+    # (xdotool mouseup: un-sticks a mouse button left pressed by a synthetic event, which blocks all touch input)
+    run('xdotool mouseup 1; pkill -f "[s]urf -F -t https://127.0.0.1:9443"; pkill -x matchbox-keyboa; '
+        'xdotool search --classname "^gta2-launcher$" windowactivate')
+
+
+# ---------------- screensaver
+class Saver:
+    up = False
+
+    def __init__(self):
+        self.w = None; self.photo = None; self.files = []; self.idx = 0; self.next = 0; self.off_at = 0
+
+    def cfg(self):
+        c = {'enabled': False, 'after': 5, 'mode': 'image', 'image': '', 'interval': 15, 'clock': True, 'off_after': 0}
+        try:
+            c.update(json.load(open(SS)))
+        except Exception:
+            pass
+        return c
+
+    def load(self, path):
+        try:
+            from PIL import Image, ImageTk
+            W, H = r.winfo_screenwidth(), r.winfo_screenheight()
+            im = Image.open(path); im.draft('RGB', (W, H)); im = im.convert('RGB')
+            s = max(W / im.width, H / im.height)  # fill the screen, crop the rest
+            im = im.resize((int(im.width * s + .5), int(im.height * s + .5)), Image.BILINEAR)
+            x, y = (im.width - W) // 2, (im.height - H) // 2
+            self.photo = ImageTk.PhotoImage(im.crop((x, y, x + W, y + H)))
+            self.cv.itemconfigure(self.img, image=self.photo)
+        except Exception as e:
+            self.cv.itemconfigure(self.img, image='')
+            self.cv.itemconfigure(self.t2, text='cannot show %s: %s' % (os.path.basename(path), e))
+
+    def show(self):
+        if self.up:
+            return
+        c = self.cfg(); self.c = c
+        W, H = r.winfo_screenwidth(), r.winfo_screenheight()
+        self.w = tk.Toplevel(r, bg='black'); self.w.overrideredirect(True); self.w.geometry('%dx%d+0+0' % (W, H))
+        self.cv = tk.Canvas(self.w, width=W, height=H, bg='black', highlightthickness=0, bd=0); self.cv.pack()
+        self.img = self.cv.create_image(0, 0, anchor='nw')
+        self.sh1 = self.cv.create_text(W // 2 + 3, H - 237, font=(F, 90, 'bold'), fill='black')
+        self.t1 = self.cv.create_text(W // 2, H - 240, font=(F, 90, 'bold'), fill='white')
+        self.t2 = self.cv.create_text(W // 2, H - 150, font=(F, 22), fill='#c9d1d9')
+        self.cv.bind('<ButtonPress-1>', lambda e: self.hide())
+        self.files = sorted(p for p in glob.glob(SSDIR + '/*') if p.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')))
+        if c['mode'] == 'image':
+            p = c['image'] if os.path.exists(c.get('image') or '') else (self.files[0] if self.files else '')
+            if p:
+                self.load(p)
+        elif c['mode'] == 'slideshow' and self.files:
+            random.shuffle(self.files); self.idx = 0; self.load(self.files[0])
+        self.next = time.time() + max(3, int(c['interval']))
+        self.off_at = time.time() + int(c['off_after']) * 60 if int(c['off_after']) > 0 else 0
+        self.up = True; self.w.lift(); self.clock()
+
+    def clock(self):
+        if not self.up:
+            return
+        c = self.c
+        show_clock = c['clock'] or c['mode'] == 'clock' or not self.photo
+        txt = time.strftime('%H:%M') if show_clock else ''
+        self.cv.itemconfigure(self.t1, text=txt); self.cv.itemconfigure(self.sh1, text=txt)
+        self.cv.itemconfigure(self.t2, text=time.strftime('%A %d %B') if show_clock else '')
+        if c['mode'] == 'clock':  # move it a little so nothing burns in
+            W, H = r.winfo_screenwidth(), r.winfo_screenheight()
+            x, y = random.randint(200, W - 200), random.randint(250, H - 250)
+            self.cv.coords(self.t1, x, y); self.cv.coords(self.sh1, x + 3, y + 3); self.cv.coords(self.t2, x, y + 90)
+        if c['mode'] == 'slideshow' and self.files and time.time() >= self.next:
+            self.idx = (self.idx + 1) % len(self.files); self.load(self.files[self.idx])
+            self.next = time.time() + max(3, int(c['interval']))
+        if self.off_at and time.time() >= self.off_at:
+            self.off_at = 0; screen(False)
+        self.w.lift()
+        r.after(1000 if c['mode'] == 'slideshow' else 20000, self.clock)
+
+    def hide(self):
+        if not self.up:
+            return
+        self.up = False; state['last'] = time.time()
+        if self.w:
+            self.w.destroy()
+        self.w = None; self.photo = None
+
+
+r = tk.Tk(className='gta2-launcher'); r.title('gta2-launcher'); r.configure(bg=BG); r.attributes('-fullscreen', True)
+saver = Saver()
+threading.Thread(target=keys, daemon=True).start()
+top = tk.Frame(r, bg=BG); top.pack(fill='x', padx=28, pady=(30, 4))
+clock = tk.Label(top, font=(F, 54, 'bold'), bg=BG, fg=FG); clock.pack(anchor='w')
+sub = tk.Label(top, font=(F, 15), bg=BG, fg=DIM); sub.pack(anchor='w')
+cards = tk.Frame(r, bg=BG, cursor='hand2'); cards.pack(fill='x', padx=22, pady=10)
+vals = {}
+for i, k in enumerate(('CPU', 'RAM', 'TEMP', 'BATT')):
+    c = tk.Frame(cards, bg=CARD); c.grid(row=0, column=i, sticky='nsew', padx=6); cards.columnconfigure(i, weight=1)
+    a = tk.Label(c, text=k, font=(F, 11), bg=CARD, fg=DIM); a.pack(anchor='w', padx=12, pady=(10, 0))
+    vals[k] = tk.Label(c, font=(F, 20, 'bold'), bg=CARD, fg=FG); vals[k].pack(anchor='w', padx=12, pady=(0, 10))
+    for w in (c, a, vals[k]):
+        w.bind('<Button-1>', lambda e: app('gta2-sysinfo', 'gta2-sysinfo'))
+net = tk.Label(r, font=('DejaVu Sans Mono', 13), bg=BG, fg=DIM, justify='left', anchor='w'); net.pack(fill='x', padx=30, pady=(2, 6))
+grid = tk.Frame(r, bg=BG); grid.pack(fill='both', expand=True, padx=22, pady=4)
+TERM = "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0d1117' -fg '#e6edf3' -e bash -l"
+TILES = (('◩', 'Second screen', lambda: run('gta2-moonlight')),
+         ('⌨', 'Terminal', lambda: run(TERM + ' & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard')),
+         ('◫', 'Docker', lambda: run('gta2-docker')),
+         ('▤', 'System', lambda: app('gta2-sysinfo', 'gta2-sysinfo')),
+         ('⇅', 'Files', lambda: app('gta2-settings', 'gta2-settings --tab share')),
+         ('▣', 'Kiosk', lambda: run('gta2-kiosk')),
+         ('⚙', 'Settings', lambda: app('gta2-settings', 'gta2-settings')),
+         ('↻', 'Power', lambda: run('gta2-settings --power')))
+for i, (ic, name, cmd) in enumerate(TILES):
+    t = tk.Frame(grid, bg=CARD, cursor='hand2'); t.grid(row=i // 2, column=i % 2, sticky='nsew', padx=6, pady=6)
+    grid.columnconfigure(i % 2, weight=1); grid.rowconfigure(i // 2, weight=1)
+    a = tk.Label(t, text=ic, font=(F, 38), bg=CARD, fg=ACC); a.pack(expand=True, pady=(10, 0))
+    b = tk.Label(t, text=name, font=(F, 17), bg=CARD, fg=FG); b.pack(expand=True, pady=(0, 10))
+    for w in (t, a, b):
+        w.bind('<Button-1>', lambda e, c=cmd: c())
+tk.Label(r, text='POWER screen · VOL brightness · HOME here · BACK Esc · RECENTS keyboard',
+         font=(F, 11), bg=BG, fg='#484f58').pack(side='bottom', pady=10)
+prev = [0, 0]
+
+
 def tick():
-    w, u = ip('wlan0'), ip('rndis0')
-    ssid = sh("nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2")
-    dk = sh('systemctl is-active docker'); n = sh('docker ps -q 2>/dev/null | wc -l') if dk == 'active' else '-'
-    a = w or u
-    st.config(text='Wi-Fi : %s %s\nUSB   : %s\nBatt  : %s\nDocker: %s (%s running)\nPortainer: %s\nssh   : gta2@%s' % (
-        ssid or '-', w or '', u or '-', battery(), dk, n, ('https://%s:9443' % a) if a else '-', a or '?'))
-    r.after(5000, tick)
-tick(); r.mainloop()
+    clock.config(text=time.strftime('%H:%M')); sub.config(text=time.strftime('%A %d %B') + '  ·  ' + socket.gethostname())
+    try:
+        a = list(map(int, open('/proc/stat').readline().split()[1:])); idle, tot = a[3] + a[4], sum(a)
+        cpu = 100 * (1 - (idle - prev[0]) / max(1, tot - prev[1])); prev[:] = [idle, tot]
+        m = dict(l.split(':') for l in open('/proc/meminfo') if ':' in l)
+        used = (int(m['MemTotal'].split()[0]) - int(m['MemAvailable'].split()[0])) // 1024
+    except Exception:
+        cpu, used = 0, 0
+    tz = max([int(x) for x in (rd(z + '/temp', '0') for z in glob.glob('/sys/class/thermal/thermal_zone*')) if x.isdigit()] or [0])
+    vals['CPU'].config(text='%d%%' % cpu); vals['RAM'].config(text='%d MB' % used)
+    vals['TEMP'].config(text='%d°C' % (tz // 1000 if tz > 1000 else tz))
+    B = next((p for p in glob.glob('/sys/class/power_supply/*') if rd(p + '/type') == 'Battery'), '/sys/class/power_supply/battery')
+    vals['BATT'].config(text=rd(B + '/capacity') + '%')
+    ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{split($4,a,\"/\"); printf \"%-7s %s\\n\", $2, a[1]}'")
+    wl = sh("nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2")
+    net.config(text=(('Wi-Fi   ' + wl + '\n') if wl else '') + ips)
+    r.after(3000, tick)
+
+
+def idle():  # screensaver timer
+    if os.path.exists(SSNOW):
+        os.remove(SSNOW); saver.show()
+    elif not saver.up and state['on']:
+        c = saver.cfg()
+        if c['enabled'] and time.time() - state['last'] > int(c['after']) * 60:
+            saver.show()
+    r.after(5000, idle)
+
+
+tick(); idle(); r.mainloop()

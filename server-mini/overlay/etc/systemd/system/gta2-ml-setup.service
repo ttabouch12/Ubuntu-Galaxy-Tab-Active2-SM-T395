@@ -1,0 +1,12 @@
+[Unit]
+Description=gta2: mainline kernel modules + QCA9377 Wi-Fi firmware
+ConditionKernelVersion=>=6
+After=vendor.mount
+Wants=vendor.mount
+Before=NetworkManager.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gta2-ml-setup.sh
+[Install]
+WantedBy=multi-user.target

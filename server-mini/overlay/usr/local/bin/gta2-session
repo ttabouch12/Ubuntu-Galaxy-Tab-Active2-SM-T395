@@ -1,7 +1,9 @@
 #!/bin/sh
-# gta2srv X session: one fullscreen app at a time (matchbox), launcher underneath
+# gta2srv X session: matchbox (one fullscreen app at a time) + launcher (also handles the hardware keys)
 xset s off -dpms 2>/dev/null
-xsetroot -solid '#101418' 2>/dev/null
+xsetroot -solid '#0d1117' 2>/dev/null
 matchbox-window-manager -use_titlebar no -use_cursor no &
-python3 /usr/local/bin/gta2-keys &
+sleep 1; sudo -n python3 /usr/local/sbin/gta2-fbinit.py --wake
+xdotool mouseup 1 2>/dev/null  # never start with a stuck synthetic button (blocks touch)
+[ -f ~/.config/gta2/kiosk_autostart ] && gta2-kiosk &
 while true; do python3 /usr/local/bin/gta2-launcher; sleep 1; done

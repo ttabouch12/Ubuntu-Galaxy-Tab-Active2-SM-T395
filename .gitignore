@@ -1,4 +1,2 @@
-*.img
-*.zip
-*.xz
-*.gz
+__pycache__/
+*.pyc

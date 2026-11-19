@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: leave Samsung charger (LPM) mode unless the tablet was shut down on purpose
+After=local-fs.target
+Before=gta2-gui.service
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/gta2-lpm
+[Install]
+WantedBy=multi-user.target

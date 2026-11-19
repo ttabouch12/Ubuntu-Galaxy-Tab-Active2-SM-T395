@@ -2,6 +2,7 @@
 Description=gta2: load QCA9377 Wi-Fi firmware (qcacld kickstart)
 After=vendor.mount
 Requires=vendor.mount
+ConditionPathExists=/sys/module/wlan/parameters/fwpath
 Before=NetworkManager.service
 [Service]
 Type=oneshot

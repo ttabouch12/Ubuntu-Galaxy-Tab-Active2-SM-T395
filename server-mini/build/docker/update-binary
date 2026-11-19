@@ -1,0 +1,38 @@
+#!/sbin/sh
+# Ubuntu Server Mini installer for Galaxy Tab Active2 LTE (SM-T395 / gtactive2lte), TWRP
+OUTFD=/proc/self/fd/$2; ZIP="$3"
+ui() { echo "ui_print $1" > $OUTFD; echo "ui_print" > $OUTFD; }
+die() { ui "ERROR: $1"; exit 1; }
+ui "=== Ubuntu Server Mini (Ubuntu 24.04 arm64) ==="
+D=$(getprop ro.product.device); [ -z "$D" ] && D=$(getprop ro.build.product)
+case "$D" in ''|gtactive2lte*|gta2*|SM-T395*|*T395*) ;; *) die "this zip is only for SM-T395 (gtactive2lte), found '$D'";; esac
+BOOT=$(ls /dev/block/platform/*/by-name/BOOT 2>/dev/null | head -1); [ -b "$BOOT" ] || BOOT=/dev/block/mmcblk0p10
+DATA=$(ls /dev/block/platform/*/by-name/USERDATA 2>/dev/null | head -1); [ -b "$DATA" ] || DATA=/dev/block/mmcblk0p24
+mount | grep -q " /data " || mount -t ext4 $DATA /data || die "cannot mount /data. In TWRP: Wipe > Format Data (type yes), then flash again."
+[ -d /data/unencrypted ] && die "/data is encrypted by Android. In TWRP: Wipe > Format Data (type yes), then flash again."
+FREE=$(df -k /data | tail -1 | awk '{print $4}'); [ "$FREE" -gt 3200000 ] || die "need 3.2 GB free on /data (have $((FREE/1024)) MB)"
+ui "- unpacking system image (2.4 GB, about 1-2 min)..."
+mkdir -p /data/gta2srv/docker
+unzip -p "$ZIP" rootfs.img.gz | gunzip -c > /data/gta2srv/rootfs.img.tmp || die "unpack failed"
+mv /data/gta2srv/rootfs.img.tmp /data/gta2srv/rootfs.img
+touch /data/gta2srv/enabled
+ui "- flashing kernel + boot image to $BOOT"
+unzip -p "$ZIP" boot.img > /tmp/gta2srv_boot.img || die "boot.img missing"
+B=$(readlink -f $BOOT); [ -b "$B" ] || B=$BOOT
+ui "  target $B"
+SZ=$(wc -c < /tmp/gta2srv_boot.img)
+WANT=$(md5sum /tmp/gta2srv_boot.img | cut -c1-32)
+OK=0
+for try in cat dd; do
+  if [ $try = cat ]; then cat /tmp/gta2srv_boot.img > $B 2>/tmp/gta2srv_err; else dd if=/tmp/gta2srv_boot.img of=$B bs=4096 2>/tmp/gta2srv_err; fi
+  sync
+  GOT=$(head -c $SZ $B 2>/dev/null | md5sum | cut -c1-32)
+  [ "$GOT" = "$WANT" ] && { OK=1; break; }
+  ui "  $try: $(head -c 120 /tmp/gta2srv_err)"
+done
+[ $OK = 1 ] || die "boot flash failed. Flash boot.img manually: TWRP > Install > Install Image > Boot (extract boot.img from this zip)."
+ui "  boot image verified ($WANT)"
+sync
+ui "Done. Reboot > System. First boot ~40 s."
+ui "Login: user gta2 / password gta2 (change it with: passwd)"
+exit 0

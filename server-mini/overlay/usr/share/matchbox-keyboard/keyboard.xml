@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- gta2srv full keyboard. Hold-free layers: Shift, Caps, and "àé" = accents + F1-F12 (number row), Del (backspace), Home/End/PgUp/PgDn (arrows) -->
+<keyboard>
+<layout id="gta2 full">
+<row>
+<key><default display="`"/><shifted display="~"/><mod1 display="°"/></key>
+<key><default display="1"/><shifted display="!"/><mod1 display="F1" action="f1"/></key>
+<key><default display="2"/><shifted display="@"/><mod1 display="F2" action="f2"/></key>
+<key><default display="3"/><shifted display="#"/><mod1 display="F3" action="f3"/></key>
+<key><default display="4"/><shifted display="$"/><mod1 display="F4" action="f4"/></key>
+<key><default display="5"/><shifted display="%"/><mod1 display="F5" action="f5"/></key>
+<key><default display="6"/><shifted display="^"/><mod1 display="F6" action="f6"/></key>
+<key><default display="7"/><shifted display="&amp;"/><mod1 display="F7" action="f7"/></key>
+<key><default display="8"/><shifted display="*"/><mod1 display="F8" action="f8"/></key>
+<key><default display="9"/><shifted display="("/><mod1 display="F9" action="f9"/></key>
+<key><default display="0"/><shifted display=")"/><mod1 display="F10" action="f10"/></key>
+<key><default display="-"/><shifted display="_"/><mod1 display="F11" action="f11"/></key>
+<key><default display="="/><shifted display="+"/><mod1 display="F12" action="f12"/></key>
+<key width="1600"><default display="⌫" action="backspace"/><mod1 display="Del" action="delete"/></key>
+</row>
+<row>
+<key width="1300"><default display="⇥" action="tab"/></key>
+<key obey-caps="true"><default display="q"/><shifted display="Q"/><mod1 display="â"/></key>
+<key obey-caps="true"><default display="w"/><shifted display="W"/><mod1 display="ŵ"/></key>
+<key obey-caps="true"><default display="e"/><shifted display="E"/><mod1 display="é"/></key>
+<key obey-caps="true"><default display="r"/><shifted display="R"/><mod1 display="è"/></key>
+<key obey-caps="true"><default display="t"/><shifted display="T"/><mod1 display="ê"/></key>
+<key obey-caps="true"><default display="y"/><shifted display="Y"/><mod1 display="ë"/></key>
+<key obey-caps="true"><default display="u"/><shifted display="U"/><mod1 display="ù"/></key>
+<key obey-caps="true"><default display="i"/><shifted display="I"/><mod1 display="î"/></key>
+<key obey-caps="true"><default display="o"/><shifted display="O"/><mod1 display="ô"/></key>
+<key obey-caps="true"><default display="p"/><shifted display="P"/><mod1 display="ö"/></key>
+<key><default display="["/><shifted display="{"/><mod1 display="«"/></key>
+<key><default display="]"/><shifted display="}"/><mod1 display="»"/></key>
+<key><default display="\"/><shifted display="|"/><mod1 display="¦"/></key>
+</row>
+<row>
+<key width="1500"><default display="⇪" action="modifier:caps"/></key>
+<key obey-caps="true"><default display="a"/><shifted display="A"/><mod1 display="à"/></key>
+<key obey-caps="true"><default display="s"/><shifted display="S"/><mod1 display="ş"/></key>
+<key obey-caps="true"><default display="d"/><shifted display="D"/><mod1 display="ä"/></key>
+<key obey-caps="true"><default display="f"/><shifted display="F"/><mod1 display="á"/></key>
+<key obey-caps="true"><default display="g"/><shifted display="G"/><mod1 display="ğ"/></key>
+<key obey-caps="true"><default display="h"/><shifted display="H"/><mod1 display="ü"/></key>
+<key obey-caps="true"><default display="j"/><shifted display="J"/><mod1 display="û"/></key>
+<key obey-caps="true"><default display="k"/><shifted display="K"/><mod1 display="ï"/></key>
+<key obey-caps="true"><default display="l"/><shifted display="L"/><mod1 display="ı"/></key>
+<key><default display=";"/><shifted display=":"/><mod1 display="¿"/></key>
+<key><default display="'"/><shifted display="&quot;"/><mod1 display="¡"/></key>
+<key width="1900"><default display="⏎" action="return"/></key>
+</row>
+<row>
+<key width="1900"><default display="⇧" action="modifier:shift"/></key>
+<key obey-caps="true"><default display="z"/><shifted display="Z"/><mod1 display="æ"/></key>
+<key obey-caps="true"><default display="x"/><shifted display="X"/><mod1 display="œ"/></key>
+<key obey-caps="true"><default display="c"/><shifted display="C"/><mod1 display="ç"/></key>
+<key obey-caps="true"><default display="v"/><shifted display="V"/><mod1 display="ß"/></key>
+<key obey-caps="true"><default display="b"/><shifted display="B"/><mod1 display="ñ"/></key>
+<key obey-caps="true"><default display="n"/><shifted display="N"/><mod1 display="ó"/></key>
+<key obey-caps="true"><default display="m"/><shifted display="M"/><mod1 display="í"/></key>
+<key><default display=","/><shifted display="&lt;"/><mod1 display="ú"/></key>
+<key><default display="."/><shifted display="&gt;"/><mod1 display="…"/></key>
+<key><default display="/"/><shifted display="?"/><mod1 display="İ"/></key>
+<key><default display="↑" action="up"/><mod1 display="⇞" action="pageup"/></key>
+<key width="1300"><default display="⇧" action="modifier:shift"/></key>
+</row>
+<row>
+<key width="1500"><default display="Ctrl" action="modifier:ctrl"/></key>
+<key width="1300"><default display="Alt" action="modifier:alt"/></key>
+<key width="1300"><default display="àé" action="modifier:mod1"/></key>
+<key width="1300"><default display="Esc" action="escape"/></key>
+<key width="5200"><default display=" " action="space"/></key>
+<key><default display="←" action="left"/><mod1 display="⇱" action="home"/></key>
+<key><default display="↓" action="down"/><mod1 display="⇟" action="pagedown"/></key>
+<key><default display="→" action="right"/><mod1 display="⇲" action="end"/></key>
+</row>
+</layout>
+</keyboard>
