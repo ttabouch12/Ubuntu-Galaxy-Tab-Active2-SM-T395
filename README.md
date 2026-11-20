@@ -1,14 +1,19 @@
 # Ubuntu for the Galaxy Tab Active2 LTE (SM-T395, Exynos 7870)
 
-Two Ubuntu 24.04 builds for the rugged Samsung Galaxy Tab Active2 LTE (`gtactive2lte`):
+**Give an old rugged tablet a second life as a tiny home server with a touch screen.**
+
+The Samsung Galaxy Tab Active2 (2017) is stuck on Android 9 and too slow for today's apps. But it is a fanless
+8-core ARM64 computer with 3 GB of RAM, Wi-Fi, a built-in UPS (its battery), an IP68 case and a screen.
+This repo turns it into **Ubuntu Server Mini**: native Ubuntu 24.04, no Android underneath,
+Docker, file sharing, a touch control panel on the device and a web dashboard for your phone or PC.
 
 | | **Ubuntu Server Mini** (recommended) | **Ubuntu Touch** (alpha) |
 |---|---|---|
-| What it is | Bare-bones Ubuntu 24.04 server with a tiny touch launcher | Full phone/tablet shell (Lomiri) on Halium 13 |
-| Android inside | **No.** Native Linux, Android is not running | Yes, an Android 13 container for the hardware |
-| RAM used after boot | **~300 MB** with the home screen + file sharing | ~1.3 GB |
+| What it is | Ubuntu 24.04 server + touch launcher + web dashboard | Full phone/tablet shell (Lomiri) on Halium 13 |
+| Android inside | **No.** Native Linux | Yes, an Android 13 container for the hardware |
+| RAM used after boot | **~300 MB** (home screen + file sharing + Docker) | ~1.3 GB |
 | Boot time | **~15 s** | ~25 s |
-| Use it for | Docker host, SSH box, second screen for a laptop | Touch tablet, calls/SMS, apps |
+| Use it for | Docker host, NAS, Pi-hole, Home Assistant, wall dashboard | Touch tablet, calls/SMS, apps |
 | Folder | [`server-mini/`](server-mini/README.md) | [`ubuntu-touch/`](ubuntu-touch/README.md) |
 
 > Looking for Android? See **[LineageOS 20 (Android 13) OC edition](https://github.com/ttabouch12/LineageOS-20-Galaxy-Tab-Active2-SM-T395)**.
@@ -16,61 +21,66 @@ Two Ubuntu 24.04 builds for the rugged Samsung Galaxy Tab Active2 LTE (`gtactive
 
 ---
 
-## Ubuntu Server Mini
+## Ubuntu Server Mini 1.3
 
-A "server distro" for the tablet: native Ubuntu 24.04 (arm64), **no Android underneath**, about
-**300 MB RAM** with the touch home screen and file sharing running and a **15 s boot**.
-
-| Home | System monitor | Wi-Fi | Keyboard |
+| Home | Settings | Wi-Fi | Keyboard |
 |---|---|---|---|
-| ![](server-mini/screenshots/home.png) | ![](server-mini/screenshots/system.png) | ![](server-mini/screenshots/settings.png) | ![](server-mini/screenshots/keyboard.png) |
+| ![](server-mini/screenshots/v13/home.png) | ![](server-mini/screenshots/v13/settings.png) | ![](server-mini/screenshots/v13/wifi.png) | ![](server-mini/screenshots/v13/keyboard.png) |
 
-| File sharing | Screensaver settings | Screensaver | Kiosk / dashboard |
+| Display | Battery & charge limit | CPU | System monitor |
 |---|---|---|---|
-| ![](server-mini/screenshots/files.png) | ![](server-mini/screenshots/display.png) | ![](server-mini/screenshots/screensaver.png) | ![](server-mini/screenshots/kiosk-dashboard.png) |
+| ![](server-mini/screenshots/v13/display.png) | ![](server-mini/screenshots/v13/battery.png) | ![](server-mini/screenshots/v13/cpu.png) | ![](server-mini/screenshots/v13/system.png) |
 
-### What you can do with it
+| Web dashboard (phone/PC) | App store | Docker | File sharing |
+|---|---|---|---|
+| ![](server-mini/screenshots/v13/panel.png) | ![](server-mini/screenshots/v13/panel-store.png) | ![](server-mini/screenshots/v13/docker.png) | ![](server-mini/screenshots/v13/files.png) |
 
-* **Docker host**: run light services (Pi-hole, Home Assistant, Uptime Kuma, Nginx, MQTT, Syncthing, small databases...).
-  Manage them from the **Portainer** web UI (`https://<ip>:9443`) or over SSH. CPU and RAM limits work (`--cpus`, `-m`).
-* **Always-on SSH box** over Wi-Fi or the USB cable (USB networking with DHCP for the laptop, `10.15.19.82`).
-* **File sharing (NAS)**: an SMB share (`\\<ip>\share`, Windows/Mac/Linux, shows up in the Windows *Network* folder)
-  and SFTP, over Wi-Fi **or the USB cable** (~27 MB/s over USB). User `gta2`, password `gta2` (change it in Settings > Files).
-  The share lives in `/data/gta2srv/share`, so it survives reinstalling the OS.
-* **Wall / desk monitor (kiosk mode)**: show any web page full screen with no login (a Pi-hole or Grafana dashboard,
-  a status page). Built in: a live system dashboard on `http://<ip>:8088` (CPU, RAM, temperature, battery, disk,
-  containers), also reachable from any browser on your network.
-* **Second screen for a laptop**: Moonlight client, paired with Sunshine on the laptop (see `server-mini/SECOND-SCREEN.md`).
-* **Rugged mini server**: the Tab Active2 is IP68, has a big battery as a built-in UPS, and runs on USB power.
+### What people can do with an old tablet like this
 
-### Home screen and keys
-
-Eight tiles: **Second screen, Terminal, Docker** (Portainer full screen), **System** (htop-style monitor: per-core load
-and clock, temperatures, RAM/zram, storage, network speed, battery, top processes with kill, Docker containers),
-**Files** (sharing), **Kiosk, Settings, Power**. Tap the CPU/RAM/TEMP/BATT cards to open the System monitor.
-
-The on-screen keyboard (`gta2-osk`) has big keys and a full PC layout: number row, Tab, Caps, Shift (tap = one
-letter, double tap = lock), Ctrl and Alt (sticky for the next key), arrows, and an **Fn àé** layer with accents,
-F1-F12, Esc, Del, Home/End/PgUp/PgDn. It never steals the focus, so it types into the app below. It opens with the
-Terminal, when you tap a text field, or with Recents; the ▾ key hides it. Size Small/Medium/Large in Settings > Display.
-
-**Screensaver**: your own image, a slideshow of a folder, or a moving clock, after 1-120 min of no touch, optionally
-turning the screen off later. Copy pictures into the `Screensaver` folder of the share.
-
-| Key | Action |
+| Use case | How, with this build |
 |---|---|
-| Power | screen off / on (backlight) |
-| Volume up / down | brightness |
-| Home | back to the home screen |
-| Back | Esc |
-| Recents | on-screen keyboard on / off |
+| **Ad blocker for the whole house** | App store → *Pi-hole* or *AdGuard Home*, point your router's DNS at the tablet. |
+| **Smart-home hub with a wall screen** | App store → *Home Assistant*; Settings → Kiosk shows its dashboard full screen at boot. The battery keeps it running through power cuts. |
+| **Small NAS / backup target** | Built-in SMB share (`\\tablet\share`, shows up in Windows' *Network*), SFTP, *Syncthing* for phone photo backup, microSD card for extra space. |
+| **Media server** | *Jellyfin* (music, light video) or *Navidrome* (music streaming to your phone). |
+| **Password manager** | *Vaultwarden* (Bitwarden compatible) on your own hardware, reachable everywhere with *Tailscale*. |
+| **Uptime / network monitor** | *Uptime Kuma* + the live status page on `:8088` on the tablet's screen. |
+| **Downloads box** | *Transmission* / *qBittorrent* writing straight to the share. |
+| **Git server, automations** | *Gitea*, *Node-RED*, *Mosquitto* (MQTT) for ESP32/IoT projects. |
+| **Second screen for a laptop** | Moonlight client tile (pair with Sunshine on the PC). |
+| **Learning Linux/Docker** | A real always-on ARM64 Ubuntu box with SSH, for free, that fits in a drawer. |
 
-**Settings** (tabs, drag with a finger to scroll): **Wi-Fi** (scan / connect / forget, DHCP or static IP),
-**Display** (brightness, screensaver), **Files** (SMB on/off, guest access, password, addresses), **Kiosk** (page +
-"start at boot") and **Power** (Reboot, Shut down, TWRP recovery, Download mode).
+Most of these apps need 30–150 MB of RAM each; the tablet has ~2.4 GB free, so several run at once.
 
-**CPU**: all 8 cores at 1.79 GHz all the time; throttling starts at **90 °C** (92/94/96/98 °C steps, hardware
-shutdown at 115 °C). Samsung's default started throttling at 76 °C.
+### What's new in 1.3
+
+* **Redesigned interface.** Rounded, anti-aliased cards, live CPU/RAM/temperature/battery tiles and a new home screen.
+* **New keyboard, Gboard-style.** Esc/Tab/Ctrl/Alt/arrow strip, number row, `?123` and `=\<` layers, long-press for
+  accents, key-repeat backspace, one-shot Shift or Caps lock, S/M/L sizes. It never steals the focus.
+* **Settings v2:** a category list with these pages:
+
+  | Group | Pages |
+  |---|---|
+  | Network | Wi-Fi, Hotspot & USB tether, VPN (Tailscale / WireGuard) |
+  | Display | Brightness, rotation (portrait/landscape), screen timeout, keyboard size, screensaver |
+  | Hardware | Battery (health, **charge limit** for 24/7 use), CPU (speed profile, throttle temperature), Bluetooth |
+  | Server | File sharing, Docker (start/stop/autostart/cleanup), SSH (password login, keys), Kiosk |
+  | System | Date & time zone, device name & password, Ubuntu updates & cleanup, power |
+* **Web dashboard on port 80** (`http://<tablet-ip>/`, sign in with the `gta2` password). It is in the style of
+  ZimaOS/CasaOS, but systemd starts it only when you open it and it exits after 10 idle minutes, so it uses **0 MB
+  when nobody is looking**. Pages:
+  * live stats, with your Docker apps as tiles linking to their web UIs;
+  * an **app store** with one-click installs of 18 small arm64 apps;
+  * a **file manager** for the share and the SD card;
+  * a **live view of the tablet's screen that you can tap**;
+  * **every setting** from the tablet.
+
+  See [`server-mini/PANEL.md`](server-mini/PANEL.md).
+* **microSD card:** mounted automatically on insert (`/media/sdcard`), visible as *SD card* in the share and the web
+  file manager (FAT32, exFAT, NTFS, ext4). Not yet tested with a card in this release.
+* **Bluetooth** page (BlueZ) for keyboards, mice and speakers: needs the mainline kernel (the 3.18 kernel's
+  Bluetooth only works through Android).
+* **Battery charge limit** (stop at e.g. 80 %, resume 5 % lower) so a tablet plugged in 24/7 doesn't swell.
 
 ### Install (about 5 minutes)
 
@@ -84,30 +94,49 @@ runs stock Samsung firmware.
 4. Copy the zip to the tablet (`adb push`, MTP or a microSD card) and **Install** it.
 5. **Reboot > System**. The home screen appears after about 20 seconds.
 
-Default login: user **`gta2`**, password **`gta2`**. Change it right away with `passwd`.
-Headless setup (SSH key and Wi-Fi without touching the screen): see `server-mini/README.md`.
+Default login: user **`gta2`**, password **`gta2`**. Change it right away (Settings → Device, or `passwd`).
+Headless setup (SSH key and Wi-Fi without touching the screen): see [`server-mini/README.md`](server-mini/README.md).
+
+Updating from 1.2: copy `server-mini/overlay/` over `/` (or reinstall the zip; your share, Docker data and apps in
+`/data/gta2srv` are kept).
+
+### Home screen and keys
+
+| Key | Action |
+|---|---|
+| Power | screen off / on (backlight) |
+| Volume up / down | brightness |
+| Home | back to the home screen (also closes Portainer/kiosk, hides the keyboard) |
+| Back | Esc |
+| Recents | on-screen keyboard on / off |
+
+### Two kernels
+
+* **3.18 (default in the zip):** Samsung/LineageOS kernel, everything in the tables above works. CPU at 1.79 GHz on all
+  8 cores, throttling from 90 °C.
+* **Mainline Linux 6.18 (experimental, [`server-mini/MAINLINE.md`](server-mini/MAINLINE.md)).** It boots through
+  U-Boot and has these working:
+  * Wi-Fi (ath10k), touch, battery/charger (SM5705 drivers), temperature sensor (new TMU driver), Bluetooth HCI, SD;
+  * **CPU frequency scaling up to 1.79 GHz**: written from scratch for this SoC, stress-tested on all 8 cores, with
+    this chip's own voltages;
+  * a kernel with cgroup v2, overlayfs and user namespaces (what Docker expects).
+
+  Missing: KMS display (it uses the bootloader framebuffer), GPU, audio. If a boot fails, the next boot falls back
+  to the last good kernel by itself.
 
 ### Limitations
 
-* **Kernel 3.18** (Samsung/LineageOS): no user namespaces (no rootless containers, no userns-remap), Docker uses
-  the slow `vfs` storage driver (images take their full size on disk), cgroup v1 only.
-* **No GPU acceleration** (the Mali GPU needs Android). The screen is a plain framebuffer: fine for the home screen,
-  terminal and dashboards, but browsers are slow and Moonlight decodes video on the CPU (30-60 fps, not for gaming).
-* **Not supported**: sound, camera, Bluetooth, mobile data/SMS, GPS, fingerprint, NFC, auto-rotation, S Pen pressure.
-  The camera device is locked to root because probing it crashes this kernel.
-* **No virtual machines** (no KVM: the CPU's hypervisor mode is taken by Samsung's firmware).
-* Screen off = backlight off (the display controller is not powered down; powering it down without Android is unstable).
-* The kiosk browser (WebKit) runs without its sandbox (needs user namespaces): only show pages you trust. It uses ~100 MB RAM while open.
-* Docker images must be `arm64` / `linux/arm64/v8`.
-* Second screen pairing with Sunshine is not tested end to end yet.
-* **No MTP** on this kernel (Samsung's USB gadget does not start a FunctionFS MTP function without Android): use the SMB
-  share or SFTP over the USB cable instead, it is faster anyway.
-* The Docker tile opens Portainer in WebKit (~150 MB RAM while open, HOME closes it).
+* **3.18 kernel:** no user namespaces, Docker uses the `vfs` driver, cgroup v1. Mainline fixes these (experimental).
+* **No GPU acceleration** on either kernel yet; browsers are slow, dashboards and terminals are fine.
+* **Not supported:** sound, camera, mobile data/SMS, GPS, fingerprint, NFC, auto-rotation, S Pen pressure.
+* **No virtual machines** (no KVM: EL2 is taken by Samsung's firmware).
+* The kiosk browser runs without a sandbox: only show pages you trust.
+* **2 GHz is not possible:** 1.9–2.0 GHz hangs this chip even on 4 cores at 1.275 V (tested). 1.79 GHz is the ceiling.
 
 ### Back to Android
 
-TWRP > Wipe > Format Data > flash the LineageOS 20 OC zip > Reboot. That's all.
-Ubuntu Server Mini only uses the BOOT partition and files in `/data`.
+TWRP > Wipe > Format Data > flash the LineageOS 20 OC zip > Reboot. Ubuntu Server Mini only uses the BOOT
+partition and files in `/data`.
 
 ---
 
@@ -121,8 +150,9 @@ Install steps, status and the porting notes are in [`ubuntu-touch/README.md`](ub
 ## Credits
 
 * LineageOS samsungexynos7870 kernel/device trees, Halium, UBports, Ubuntu, Docker, Portainer,
-  Moonlight / Sunshine (LizardByte), matchbox.
+  Moonlight / Sunshine (LizardByte), matchbox, BlueZ, Samba, wsdd.
+* Mainline Exynos 7870 work by Kaustabh Chakraborty and the exynos7870-mainline / postmarketOS community.
 * Port and tooling: ttabouch12.
 
-No Samsung firmware or proprietary blobs are in this repo. Wi-Fi firmware is read from the
+No Samsung firmware or proprietary blobs are in this repo. Wi-Fi firmware and board data are read from the
 tablet's own vendor partition at runtime.

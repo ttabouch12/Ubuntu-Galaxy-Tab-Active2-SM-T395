@@ -1,0 +1,96 @@
+From ef6c6d575e30ec01a384796906d1c669ce7ced76 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 08:44:54 +0300
+Subject: [PATCH 18/21] power: supply: sm5705_charger: add charge_behaviour
+ (auto / inhibit-charge)
+
+Drives the CHGEN line so user space can pause charging while VBUS keeps
+powering the system (charge limit for always-plugged-in tablets).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ drivers/power/supply/sm5705_charger.c | 43 +++++++++++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/drivers/power/supply/sm5705_charger.c b/drivers/power/supply/sm5705_charger.c
+index 60802cd1e..d22afe772 100644
+--- a/drivers/power/supply/sm5705_charger.c
++++ b/drivers/power/supply/sm5705_charger.c
+@@ -94,6 +94,7 @@ struct sm5705_charger {
+ 	u32 limits[SM5705_NUM_CABLES][2];
+ 	u32 float_uv;
+ 	u32 topoff_ua;
++	bool inhibit;	/* user asked to pause charging (charge_behaviour) */
+ };
+ 
+ static const char * const sm5705_limit_props[SM5705_NUM_CABLES] = {
+@@ -382,9 +383,46 @@ static int sm5705_chg_get_property(struct power_supply *psy,
+ 	case POWER_SUPPLY_PROP_MANUFACTURER:
+ 		val->strval = "Silicon Mitus";
+ 		return 0;
++	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
++		val->intval = chg->inhibit ? POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE
++					   : POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static int sm5705_chg_set_property(struct power_supply *psy,
++				   enum power_supply_property psp,
++				   const union power_supply_propval *val)
++{
++	struct sm5705_charger *chg = power_supply_get_drvdata(psy);
++
++	if (psp != POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR)
++		return -EINVAL;
++
++	switch (val->intval) {
++	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
++	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
++
++	scoped_guard(mutex, &chg->lock) {
++		chg->inhibit = val->intval == POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
++		/* the enable line is the charger's CHGEN: low pauses charging, the system stays powered from VBUS */
++		gpiod_set_value_cansleep(chg->enable_gpio, !chg->inhibit);
++	}
++	power_supply_changed(psy);
++
++	return 0;
++}
++
++static int sm5705_chg_prop_writeable(struct power_supply *psy,
++				     enum power_supply_property psp)
++{
++	return psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR;
+ }
+ 
+ static const enum power_supply_property sm5705_chg_props[] = {
+@@ -396,6 +434,7 @@ static const enum power_supply_property sm5705_chg_props[] = {
+ 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+ 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+ 	POWER_SUPPLY_PROP_MANUFACTURER,
++	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+ };
+ 
+ static const struct power_supply_desc sm5705_chg_desc = {
+@@ -404,6 +443,10 @@ static const struct power_supply_desc sm5705_chg_desc = {
+ 	.properties	= sm5705_chg_props,
+ 	.num_properties	= ARRAY_SIZE(sm5705_chg_props),
+ 	.get_property	= sm5705_chg_get_property,
++	.set_property	= sm5705_chg_set_property,
++	.property_is_writeable = sm5705_chg_prop_writeable,
++	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
++			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
+ };
+ 
+ static int sm5705_chg_parse_dt(struct sm5705_charger *chg)
+-- 
+2.43.0
+

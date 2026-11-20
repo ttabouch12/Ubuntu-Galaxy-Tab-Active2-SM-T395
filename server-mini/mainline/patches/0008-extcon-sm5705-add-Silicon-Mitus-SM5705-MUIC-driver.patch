@@ -1,0 +1,533 @@
+From ccfc8fc4e8daf367189488e437a55274d6c338f3 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:10:57 +0300
+Subject: [PATCH 08/21] extcon: sm5705: add Silicon Mitus SM5705 MUIC driver
+
+The SM5705 companion chip of Exynos7870 Samsung devices has a MUIC whose
+register map is not compatible with the SM5502/SM5504 (extra INT3/INTMASK3
+pair, device-type registers elsewhere), so add a dedicated driver.
+
+The driver switches the MUIC to manual mode, routes D+/D- to the USB
+controller and reports USB / USB host / SDP / CDP / DCP / slow charger
+cables through extcon. Add the matching devicetree binding.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHWjrzX28CzyNMEnVDk
+---
+ .../extcon/siliconmitus,sm5705-muic.yaml      |  54 +++
+ drivers/extcon/Kconfig                        |  12 +
+ drivers/extcon/Makefile                       |   1 +
+ drivers/extcon/extcon-sm5705.c                | 405 ++++++++++++++++++
+ 4 files changed, 472 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/extcon/siliconmitus,sm5705-muic.yaml
+ create mode 100644 drivers/extcon/extcon-sm5705.c
+
+diff --git a/Documentation/devicetree/bindings/extcon/siliconmitus,sm5705-muic.yaml b/Documentation/devicetree/bindings/extcon/siliconmitus,sm5705-muic.yaml
+new file mode 100644
+index 000000000..61a77d861
+--- /dev/null
++++ b/Documentation/devicetree/bindings/extcon/siliconmitus,sm5705-muic.yaml
+@@ -0,0 +1,54 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/extcon/siliconmitus,sm5705-muic.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Silicon Mitus SM5705 MUIC (Micro-USB Interface Controller)
++
++maintainers:
++  - Linux Exynos7870 maintainers <linux-samsung-soc@vger.kernel.org>
++
++description:
++  The MUIC block of the Silicon Mitus SM5705 companion chip detects the
++  accessory or charger attached to the USB connector and routes the D+/D-
++  lines to the USB controller. The charger and the fuel gauge of the same
++  chip are separate I2C devices, see siliconmitus,sm5705-charger and
++  siliconmitus,sm5705-fuelgauge.
++
++properties:
++  compatible:
++    const: siliconmitus,sm5705-muic
++
++  reg:
++    maxItems: 1
++    description: I2C slave address, 0x25.
++
++  interrupts:
++    maxItems: 1
++
++  connector:
++    $ref: /schemas/connector/usb-connector.yaml#
++    unevaluatedProperties: false
++
++required:
++  - compatible
++  - reg
++  - interrupts
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/interrupt-controller/irq.h>
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        extcon@25 {
++            compatible = "siliconmitus,sm5705-muic";
++            reg = <0x25>;
++            interrupt-parent = <&gpa2>;
++            interrupts = <6 IRQ_TYPE_EDGE_FALLING>;
++        };
++    };
+diff --git a/drivers/extcon/Kconfig b/drivers/extcon/Kconfig
+index aec46bf03..90a8cd714 100644
+--- a/drivers/extcon/Kconfig
++++ b/drivers/extcon/Kconfig
+@@ -193,6 +193,18 @@ config EXTCON_SM5502
+ 	  Silicon Mitus SM5502. The SM5502 is a USB port accessory
+ 	  detector and switch.
+ 
++config EXTCON_SM5705
++	tristate "Silicon Mitus SM5705 EXTCON support"
++	depends on I2C
++	select IRQ_DOMAIN
++	select REGMAP_I2C
++	select REGMAP_IRQ
++	help
++	  If you say yes here you get support for the MUIC (micro-USB
++	  interface controller) of the Silicon Mitus SM5705, found on some
++	  Samsung Exynos7870 devices. It detects the attached USB cable or
++	  charger and routes D+/D- to the USB controller.
++
+ config EXTCON_USB_GPIO
+ 	tristate "USB GPIO extcon support"
+ 	depends on GPIOLIB || COMPILE_TEST
+diff --git a/drivers/extcon/Makefile b/drivers/extcon/Makefile
+index 6482f2bfd..fa743ff9b 100644
+--- a/drivers/extcon/Makefile
++++ b/drivers/extcon/Makefile
+@@ -24,6 +24,7 @@ obj-$(CONFIG_EXTCON_PTN5150)	+= extcon-ptn5150.o
+ obj-$(CONFIG_EXTCON_QCOM_SPMI_MISC) += extcon-qcom-spmi-misc.o
+ obj-$(CONFIG_EXTCON_RT8973A)	+= extcon-rt8973a.o
+ obj-$(CONFIG_EXTCON_SM5502)	+= extcon-sm5502.o
++obj-$(CONFIG_EXTCON_SM5705)	+= extcon-sm5705.o
+ obj-$(CONFIG_EXTCON_USB_GPIO)	+= extcon-usb-gpio.o
+ obj-$(CONFIG_EXTCON_USBC_CROS_EC) += extcon-usbc-cros-ec.o
+ obj-$(CONFIG_EXTCON_USBC_TUSB320) += extcon-usbc-tusb320.o
+diff --git a/drivers/extcon/extcon-sm5705.c b/drivers/extcon/extcon-sm5705.c
+new file mode 100644
+index 000000000..29a7b7fc5
+--- /dev/null
++++ b/drivers/extcon/extcon-sm5705.c
+@@ -0,0 +1,405 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * extcon-sm5705.c - Silicon Mitus SM5705 MUIC extcon driver
++ *
++ * The SM5705 companion chip of the Samsung Exynos7870 devices contains a
++ * micro-USB interface controller (MUIC) at I2C address 0x25. Its register
++ * map is close to, but not compatible with, the SM5502/SM5504 (the
++ * interrupt/mask registers are shifted by an additional INT3/INTMASK3 pair
++ * and the device-type registers are located elsewhere), so it gets its own
++ * driver.
++ *
++ * The bootloader leaves the D+/D- lines routed to the UART. This driver
++ * switches the MUIC to manual mode, routes D+/D- to the USB controller and
++ * reports the attached cable through extcon so that e.g. the DWC3 can be
++ * told about VBUS / the role.
++ *
++ * Reference: Samsung vendor kernel drivers/muic/universal/muic_regmap_sm5705.c
++ */
++
++#include <linux/bits.h>
++#include <linux/err.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/regmap.h>
++#include <linux/extcon-provider.h>
++
++/* Registers */
++#define SM5705_MUIC_REG_DEVID		0x01
++#define SM5705_MUIC_REG_CTRL		0x02
++#define SM5705_MUIC_REG_INT1		0x03
++#define SM5705_MUIC_REG_INT2		0x04
++#define SM5705_MUIC_REG_INT3		0x05
++#define SM5705_MUIC_REG_INTMASK1	0x06
++#define SM5705_MUIC_REG_INTMASK2	0x07
++#define SM5705_MUIC_REG_INTMASK3	0x08
++#define SM5705_MUIC_REG_ADC		0x09
++#define SM5705_MUIC_REG_DEVT1		0x0a
++#define SM5705_MUIC_REG_DEVT2		0x0b
++#define SM5705_MUIC_REG_DEVT3		0x0c
++#define SM5705_MUIC_REG_TIMING1		0x0d
++#define SM5705_MUIC_REG_MANSW1		0x13
++#define SM5705_MUIC_REG_MANSW2		0x14
++#define SM5705_MUIC_REG_RSVDID1		0x15
++#define SM5705_MUIC_REG_RSVDID2		0x16
++#define SM5705_MUIC_REG_CHGTYPE		0x17
++#define SM5705_MUIC_REG_RESET		0x22
++#define SM5705_MUIC_REG_MAX		0x37
++
++/* CONTROL */
++#define SM5705_CTRL_SW_OPEN		BIT(4)
++#define SM5705_CTRL_RAW_DATA		BIT(3)
++/* 1: automatic switching, 0: manual switching (MANSW1 is used) */
++#define SM5705_CTRL_AUTO_SW		BIT(2)
++#define SM5705_CTRL_WAIT		BIT(1)
++/* 1: interrupt masked */
++#define SM5705_CTRL_INT_MASK		BIT(0)
++
++/* INT1 */
++#define SM5705_INT1_ATTACH		BIT(0)
++#define SM5705_INT1_DETACH		BIT(1)
++/* INT2 */
++#define SM5705_INT2_VBUS_OFF		BIT(0)
++#define SM5705_INT2_ADC_CHG		BIT(2)
++#define SM5705_INT2_VBUS_ON		BIT(7)
++
++/* DEVICE TYPE 1 */
++#define SM5705_DEVT1_USB_OTG		BIT(7)
++#define SM5705_DEVT1_DEDICATED_CHG	BIT(6)
++#define SM5705_DEVT1_USB_CHG		BIT(5)	/* CDP */
++#define SM5705_DEVT1_USB		BIT(2)	/* SDP */
++
++/* DEVICE TYPE 2 */
++#define SM5705_DEVT2_JIG_USB_OFF	BIT(1)
++#define SM5705_DEVT2_JIG_USB_ON		BIT(0)
++
++/* DEVICE TYPE 3 */
++#define SM5705_DEVT3_AFC_TA		BIT(7)
++#define SM5705_DEVT3_U200_CHG		BIT(6)
++#define SM5705_DEVT3_LO_TA		BIT(5)
++#define SM5705_DEVT3_DCD_OUT_SDP	BIT(2)
++
++/* MANUAL SWITCH 1: D- [7:5], D+ [4:2] */
++#define SM5705_MANSW1_DM_SHIFT		5
++#define SM5705_MANSW1_DP_SHIFT		2
++#define SM5705_MANSW1_PATH_USB		0x1
++#define SM5705_MANSW1_USB	((SM5705_MANSW1_PATH_USB << SM5705_MANSW1_DM_SHIFT) | \
++				 (SM5705_MANSW1_PATH_USB << SM5705_MANSW1_DP_SHIFT))
++
++/* RESERVED ID1: VBUS valid */
++#define SM5705_RSVDID1_VBUS_VALID	BIT(0)
++
++/* RESERVED ID2: values the vendor driver programs for BC1.2 detection */
++#define SM5705_RSVDID2_DCD_TIME_EN	BIT(2)
++#define SM5705_RSVDID2_CHGPUMP_NEN	BIT(5)
++
++/* TIMING1: ADC detect time 200ms, key press time 100ms (vendor default) */
++#define SM5705_TIMING1_VALUE		0x03
++
++/* Interrupt sources exposed through regmap-irq */
++enum sm5705_muic_irq {
++	SM5705_MUIC_IRQ_ATTACH,
++	SM5705_MUIC_IRQ_DETACH,
++	SM5705_MUIC_IRQ_VBUS_OFF,
++	SM5705_MUIC_IRQ_ADC_CHG,
++	SM5705_MUIC_IRQ_VBUS_ON,
++};
++
++static const struct regmap_irq sm5705_muic_irqs[] = {
++	REGMAP_IRQ_REG(SM5705_MUIC_IRQ_ATTACH, 0, SM5705_INT1_ATTACH),
++	REGMAP_IRQ_REG(SM5705_MUIC_IRQ_DETACH, 0, SM5705_INT1_DETACH),
++	REGMAP_IRQ_REG(SM5705_MUIC_IRQ_VBUS_OFF, 1, SM5705_INT2_VBUS_OFF),
++	REGMAP_IRQ_REG(SM5705_MUIC_IRQ_ADC_CHG, 1, SM5705_INT2_ADC_CHG),
++	REGMAP_IRQ_REG(SM5705_MUIC_IRQ_VBUS_ON, 1, SM5705_INT2_VBUS_ON),
++};
++
++static const struct regmap_irq_chip sm5705_muic_irq_chip = {
++	.name		= "sm5705-muic",
++	.status_base	= SM5705_MUIC_REG_INT1,
++	.mask_base	= SM5705_MUIC_REG_INTMASK1,
++	.num_regs	= 3,
++	.irqs		= sm5705_muic_irqs,
++	.num_irqs	= ARRAY_SIZE(sm5705_muic_irqs),
++};
++
++static const unsigned int sm5705_extcon_cable[] = {
++	EXTCON_USB,
++	EXTCON_USB_HOST,
++	EXTCON_CHG_USB_SDP,
++	EXTCON_CHG_USB_DCP,
++	EXTCON_CHG_USB_CDP,
++	EXTCON_CHG_USB_SLOW,
++	EXTCON_NONE,
++};
++
++struct sm5705_muic {
++	struct device *dev;
++	struct regmap *regmap;
++	struct regmap_irq_chip_data *irq_data;
++	struct extcon_dev *edev;
++	struct mutex lock;
++};
++
++static bool sm5705_muic_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case SM5705_MUIC_REG_INT1 ... SM5705_MUIC_REG_INT3:
++	case SM5705_MUIC_REG_ADC:
++	case SM5705_MUIC_REG_DEVT1 ... SM5705_MUIC_REG_DEVT3:
++	case SM5705_MUIC_REG_RSVDID1:
++	case SM5705_MUIC_REG_CHGTYPE:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static const struct regmap_config sm5705_muic_regmap_config = {
++	.reg_bits	= 8,
++	.val_bits	= 8,
++	.max_register	= SM5705_MUIC_REG_MAX,
++	.volatile_reg	= sm5705_muic_volatile_reg,
++};
++
++static int sm5705_muic_route_usb(struct sm5705_muic *muic)
++{
++	return regmap_write(muic->regmap, SM5705_MUIC_REG_MANSW1,
++			    SM5705_MANSW1_USB);
++}
++
++/* Evaluate the attached cable and update the extcon state accordingly. */
++static void sm5705_muic_update_cable(struct sm5705_muic *muic)
++{
++	struct extcon_dev *edev = muic->edev;
++	unsigned int devt1, devt2, devt3, rsvd1;
++	bool usb = false, host = false;
++	bool sdp = false, dcp = false, cdp = false, slow = false;
++	int ret;
++
++	mutex_lock(&muic->lock);
++
++	ret = regmap_read(muic->regmap, SM5705_MUIC_REG_DEVT1, &devt1);
++	if (!ret)
++		ret = regmap_read(muic->regmap, SM5705_MUIC_REG_DEVT2, &devt2);
++	if (!ret)
++		ret = regmap_read(muic->regmap, SM5705_MUIC_REG_DEVT3, &devt3);
++	if (!ret)
++		ret = regmap_read(muic->regmap, SM5705_MUIC_REG_RSVDID1, &rsvd1);
++	if (ret) {
++		dev_err(muic->dev, "cannot read cable type: %d\n", ret);
++		goto out;
++	}
++
++	if (devt1 & SM5705_DEVT1_USB_OTG) {
++		host = true;
++	} else {
++		if (devt1 & SM5705_DEVT1_USB || devt3 & SM5705_DEVT3_DCD_OUT_SDP ||
++		    devt2 & (SM5705_DEVT2_JIG_USB_ON | SM5705_DEVT2_JIG_USB_OFF)) {
++			usb = true;
++			sdp = true;
++		}
++		if (devt1 & SM5705_DEVT1_USB_CHG) {
++			usb = true;
++			cdp = true;
++		}
++		if (devt1 & SM5705_DEVT1_DEDICATED_CHG ||
++		    devt3 & (SM5705_DEVT3_AFC_TA | SM5705_DEVT3_U200_CHG))
++			dcp = true;
++		if (devt3 & SM5705_DEVT3_LO_TA)
++			slow = true;
++	}
++
++	/* Without valid VBUS nothing can be charging us. */
++	if (!(rsvd1 & SM5705_RSVDID1_VBUS_VALID) && !host)
++		usb = sdp = cdp = dcp = slow = false;
++
++	dev_dbg(muic->dev, "DEVT1=%#x DEVT2=%#x DEVT3=%#x VBUS=%lu\n",
++		devt1, devt2, devt3, rsvd1 & SM5705_RSVDID1_VBUS_VALID);
++
++	/* Make sure the data path stays routed to the USB controller. */
++	sm5705_muic_route_usb(muic);
++
++	extcon_set_state(edev, EXTCON_USB, usb);
++	extcon_set_state(edev, EXTCON_USB_HOST, host);
++	extcon_set_state(edev, EXTCON_CHG_USB_SDP, sdp);
++	extcon_set_state(edev, EXTCON_CHG_USB_CDP, cdp);
++	extcon_set_state(edev, EXTCON_CHG_USB_DCP, dcp);
++	extcon_set_state(edev, EXTCON_CHG_USB_SLOW, slow);
++	extcon_sync(edev, EXTCON_USB);
++	extcon_sync(edev, EXTCON_USB_HOST);
++	extcon_sync(edev, EXTCON_CHG_USB_SDP);
++	extcon_sync(edev, EXTCON_CHG_USB_CDP);
++	extcon_sync(edev, EXTCON_CHG_USB_DCP);
++	extcon_sync(edev, EXTCON_CHG_USB_SLOW);
++out:
++	mutex_unlock(&muic->lock);
++}
++
++static irqreturn_t sm5705_muic_irq_handler(int irq, void *data)
++{
++	struct sm5705_muic *muic = data;
++
++	sm5705_muic_update_cable(muic);
++
++	return IRQ_HANDLED;
++}
++
++static int sm5705_muic_hw_init(struct sm5705_muic *muic)
++{
++	struct regmap *regmap = muic->regmap;
++	unsigned int reg;
++	int ret;
++
++	/*
++	 * Manual switching (MANSW1 decides the D+/D- path), switches not
++	 * forced open, interrupt output enabled.
++	 */
++	ret = regmap_update_bits(regmap, SM5705_MUIC_REG_CTRL,
++				 SM5705_CTRL_SW_OPEN | SM5705_CTRL_AUTO_SW |
++				 SM5705_CTRL_INT_MASK, 0);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(regmap, SM5705_MUIC_REG_TIMING1,
++			   SM5705_TIMING1_VALUE);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(regmap, SM5705_MUIC_REG_RSVDID2,
++				 SM5705_RSVDID2_DCD_TIME_EN |
++				 SM5705_RSVDID2_CHGPUMP_NEN,
++				 SM5705_RSVDID2_DCD_TIME_EN |
++				 SM5705_RSVDID2_CHGPUMP_NEN);
++	if (ret)
++		return ret;
++
++	/*
++	 * Start with every interrupt source masked (1 = masked, as the vendor
++	 * driver does for INT3/AFC); regmap-irq unmasks the ones used.
++	 */
++	for (reg = SM5705_MUIC_REG_INTMASK1; reg <= SM5705_MUIC_REG_INTMASK3; reg++) {
++		ret = regmap_write(regmap, reg, 0xff);
++		if (ret)
++			return ret;
++	}
++
++	/* The bootloader leaves D+/D- on the UART; route them to USB. */
++	return sm5705_muic_route_usb(muic);
++}
++
++static int sm5705_muic_probe(struct i2c_client *i2c)
++{
++	struct device *dev = &i2c->dev;
++	struct sm5705_muic *muic;
++	unsigned int devid;
++	int ret;
++
++	if (!i2c->irq)
++		return dev_err_probe(dev, -EINVAL, "no interrupt specified\n");
++
++	muic = devm_kzalloc(dev, sizeof(*muic), GFP_KERNEL);
++	if (!muic)
++		return -ENOMEM;
++
++	muic->dev = dev;
++	i2c_set_clientdata(i2c, muic);
++	ret = devm_mutex_init(dev, &muic->lock);
++	if (ret)
++		return ret;
++
++	muic->regmap = devm_regmap_init_i2c(i2c, &sm5705_muic_regmap_config);
++	if (IS_ERR(muic->regmap))
++		return dev_err_probe(dev, PTR_ERR(muic->regmap),
++				     "failed to allocate regmap\n");
++
++	ret = regmap_read(muic->regmap, SM5705_MUIC_REG_DEVID, &devid);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot read device ID\n");
++	dev_info(dev, "SM5705 MUIC, device ID %#x\n", devid);
++
++	muic->edev = devm_extcon_dev_allocate(dev, sm5705_extcon_cable);
++	if (IS_ERR(muic->edev))
++		return PTR_ERR(muic->edev);
++
++	ret = devm_extcon_dev_register(dev, muic->edev);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register extcon\n");
++
++	ret = sm5705_muic_hw_init(muic);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to initialize MUIC\n");
++
++	ret = devm_regmap_add_irq_chip(dev, muic->regmap, i2c->irq,
++				       IRQF_ONESHOT, 0,
++				       &sm5705_muic_irq_chip, &muic->irq_data);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to add irq chip\n");
++
++	for (int i = 0; i < ARRAY_SIZE(sm5705_muic_irqs); i++) {
++		int virq;
++
++		/* ADC changes are not needed to detect a cable. */
++		if (i == SM5705_MUIC_IRQ_ADC_CHG)
++			continue;
++
++		virq = regmap_irq_get_virq(muic->irq_data, i);
++		if (virq < 0)
++			return virq;
++
++		ret = devm_request_threaded_irq(dev, virq, NULL,
++						sm5705_muic_irq_handler,
++						IRQF_ONESHOT, "sm5705-muic",
++						muic);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to request irq %d\n", i);
++	}
++
++	/* Pick up a cable that is already attached at boot. */
++	sm5705_muic_update_cable(muic);
++
++	return 0;
++}
++
++static int sm5705_muic_resume(struct device *dev)
++{
++	struct sm5705_muic *muic = dev_get_drvdata(dev);
++
++	/* State may have changed while the interrupt was not serviced. */
++	sm5705_muic_update_cable(muic);
++
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(sm5705_muic_pm_ops, NULL, sm5705_muic_resume);
++
++static const struct of_device_id sm5705_muic_of_match[] = {
++	{ .compatible = "siliconmitus,sm5705-muic" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sm5705_muic_of_match);
++
++static const struct i2c_device_id sm5705_muic_id[] = {
++	{ "sm5705-muic" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, sm5705_muic_id);
++
++static struct i2c_driver sm5705_muic_driver = {
++	.driver = {
++		.name = "sm5705-muic",
++		.of_match_table = sm5705_muic_of_match,
++		.pm = pm_sleep_ptr(&sm5705_muic_pm_ops),
++	},
++	.probe = sm5705_muic_probe,
++	.id_table = sm5705_muic_id,
++};
++module_i2c_driver(sm5705_muic_driver);
++
++MODULE_DESCRIPTION("Silicon Mitus SM5705 MUIC extcon driver");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

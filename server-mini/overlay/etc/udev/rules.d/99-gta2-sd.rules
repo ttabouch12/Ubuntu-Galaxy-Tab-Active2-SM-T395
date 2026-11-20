@@ -1,0 +1,3 @@
+# microSD (dw_mmc @13560000): automount on insert, lazy unmount on removal (gta2-sd)
+SUBSYSTEM=="block", KERNEL=="mmcblk[1-9]*", ENV{DEVTYPE}=="partition|disk", ATTRS{type}=="SD", ACTION=="add", ENV{ID_FS_TYPE}=="?*", RUN+="/usr/bin/systemd-run --no-block --collect /usr/local/sbin/gta2-sd add %k"
+SUBSYSTEM=="block", KERNEL=="mmcblk[1-9]*", ACTION=="remove", ENV{ID_FS_TYPE}=="?*", RUN+="/usr/bin/systemd-run --no-block --collect /usr/local/sbin/gta2-sd remove %k"

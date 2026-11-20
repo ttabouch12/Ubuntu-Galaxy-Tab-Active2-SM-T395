@@ -1,0 +1,142 @@
+From ff91e6d2306627ac7a587c32369e0fd56a171ae7 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 08:44:54 +0300
+Subject: [PATCH 17/21] thermal: samsung: add minimal Exynos 7870 TMU driver
+
+Reads the trimmed 25 C code and the current temperature code of the
+single CPU sensor and registers an OF thermal zone sensor.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ drivers/thermal/samsung/Kconfig          |  9 +++
+ drivers/thermal/samsung/Makefile         |  1 +
+ drivers/thermal/samsung/exynos7870_tmu.c | 90 ++++++++++++++++++++++++
+ 3 files changed, 100 insertions(+)
+ create mode 100644 drivers/thermal/samsung/exynos7870_tmu.c
+
+diff --git a/drivers/thermal/samsung/Kconfig b/drivers/thermal/samsung/Kconfig
+index f4eff5a41..be22180ea 100644
+--- a/drivers/thermal/samsung/Kconfig
++++ b/drivers/thermal/samsung/Kconfig
+@@ -9,3 +9,12 @@ config EXYNOS_THERMAL
+ 	  the TMU, reports temperature and handles cooling action if defined.
+ 	  This driver uses the Exynos core thermal APIs and TMU configuration
+ 	  data from the supported SoCs.
++
++config EXYNOS7870_TMU
++	tristate "Exynos7870 TMU temperature sensor"
++	depends on THERMAL_OF && HAS_IOMEM
++	depends on ARCH_EXYNOS || COMPILE_TEST
++	help
++	  Read-only temperature sensor for the Exynos7870 TMU (as left
++	  running by the bootloader). Trips and cooling are described in the
++	  device tree thermal-zones.
+diff --git a/drivers/thermal/samsung/Makefile b/drivers/thermal/samsung/Makefile
+index f13940715..3d1f384a4 100644
+--- a/drivers/thermal/samsung/Makefile
++++ b/drivers/thermal/samsung/Makefile
+@@ -4,3 +4,4 @@
+ #
+ obj-$(CONFIG_EXYNOS_THERMAL)			+= exynos_thermal.o
+ exynos_thermal-y				:= exynos_tmu.o
++obj-$(CONFIG_EXYNOS7870_TMU)			+= exynos7870_tmu.o
+diff --git a/drivers/thermal/samsung/exynos7870_tmu.c b/drivers/thermal/samsung/exynos7870_tmu.c
+new file mode 100644
+index 000000000..24d3e8e41
+--- /dev/null
++++ b/drivers/thermal/samsung/exynos7870_tmu.c
+@@ -0,0 +1,90 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Minimal Exynos7870 TMU (TEM1455X) temperature sensor.
++ *
++ * The bootloader leaves the TMU running (CONTROL = 0x...03). This driver only
++ * reads it: temperature = CURRENT_TEMP[8:0] - TRIMINFO[8:0] + 25 (one point
++ * trimming at 25 C, as the vendor driver does for this SoC).
++ * Trips and cooling come from the device tree thermal-zones.
++ */
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/thermal.h>
++
++#define TMU_TRIMINFO		0x00
++#define TMU_CONTROL		0x20
++#define TMU_CURRENT_TEMP	0x40
++#define TMU_TEMP_MASK		0x1ff
++#define TMU_CORE_EN		BIT(0)
++
++struct e7870_tmu {
++	void __iomem *base;
++	int trim25;
++};
++
++static int e7870_tmu_get_temp(struct thermal_zone_device *tz, int *temp)
++{
++	struct e7870_tmu *t = thermal_zone_device_priv(tz);
++	int code = readl(t->base + TMU_CURRENT_TEMP) & TMU_TEMP_MASK;
++
++	if (!code)
++		return -EAGAIN;
++	*temp = (code - t->trim25 + 25) * 1000;
++	return 0;
++}
++
++static const struct thermal_zone_device_ops e7870_tmu_ops = {
++	.get_temp = e7870_tmu_get_temp,
++};
++
++static int e7870_tmu_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct thermal_zone_device *tz;
++	struct e7870_tmu *t;
++	u32 ctrl;
++
++	t = devm_kzalloc(dev, sizeof(*t), GFP_KERNEL);
++	if (!t)
++		return -ENOMEM;
++	t->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(t->base))
++		return PTR_ERR(t->base);
++
++	t->trim25 = readl(t->base + TMU_TRIMINFO) & TMU_TEMP_MASK;
++	if (!t->trim25)
++		t->trim25 = 50;	/* vendor default efuse value */
++
++	ctrl = readl(t->base + TMU_CONTROL);
++	if (!(ctrl & TMU_CORE_EN)) {
++		writel(ctrl | TMU_CORE_EN, t->base + TMU_CONTROL);
++		dev_info(dev, "TMU was off, enabled it\n");
++	}
++
++	tz = devm_thermal_of_zone_register(dev, 0, t, &e7870_tmu_ops);
++	if (IS_ERR(tz))
++		return dev_err_probe(dev, PTR_ERR(tz), "no thermal zone\n");
++
++	dev_info(dev, "trim25 %d, control 0x%08x\n", t->trim25, ctrl);
++	return 0;
++}
++
++static const struct of_device_id e7870_tmu_of_match[] = {
++	{ .compatible = "samsung,exynos7870-tmu" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, e7870_tmu_of_match);
++
++static struct platform_driver e7870_tmu_driver = {
++	.probe = e7870_tmu_probe,
++	.driver = {
++		.name = "exynos7870-tmu",
++		.of_match_table = e7870_tmu_of_match,
++	},
++};
++module_platform_driver(e7870_tmu_driver);
++
++MODULE_DESCRIPTION("Exynos7870 TMU temperature sensor (read only)");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

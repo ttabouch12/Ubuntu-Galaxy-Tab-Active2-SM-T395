@@ -1,0 +1,163 @@
+From 4e6f9aa0a0823e2fd029fda4531bd62edbcbf26e Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 18:02:39 +0300
+Subject: [PATCH 16/21] arm64: dts: exynos: gtactive2lte: add SM5705 power and
+ CPU supplies
+
+Describe the SM5705 charger, fuel gauge and MUIC, wire the MUIC to the
+DWC3 controller, and feed both CPU clusters from S2MPU05 BUCK1 for
+cpufreq-dt.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ .../dts/exynos/exynos7870-gtactive2lte.dts    | 129 +++++++++++++++++-
+ 1 file changed, 128 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+index 56df249ab..5a62bee80 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+@@ -527,7 +527,7 @@ &i2c4 {
+ 
+ 	status = "okay";
+ 
+-	/* SM5705 charger/fuel gauge/MUIC: added by the power agent (notes/power.md) */
++	/* SM5705 nodes: see the end of this file */
+ };
+ 
+ &mmc0 {
+@@ -743,3 +743,130 @@ usb@0 {
+ &watchdog_cl0 {
+ 	status = "okay";
+ };
++
++/* ---- SM5705 power (charger, fuel gauge, MUIC) ---- */
++/ {
++	battery: battery {
++		compatible = "simple-battery";
++		/* TODO: verify against the battery label (not in the vendor DT) */
++		charge-full-design-microamp-hours = <4450000>;
++		voltage-min-design-microvolt = <3400000>;
++		voltage-max-design-microvolt = <4400000>;	/* z_batterydata:57 battery_type 4400 */
++		constant-charge-voltage-max-microvolt = <4220000>;	/* z_batterydata:196,244 chg_float_voltage */
++		charge-term-current-microamp = <250000>;	/* sm5705_charger.c:1950 TOPOFF 250 mA */
++	};
++};
++
++&i2c4 {
++	samsung,i2c-max-bus-freq = <400000>;	/* common.dtsi:428 */
++	#address-cells = <1>;
++	#size-cells = <0>;
++	status = "okay";
++
++	pmic@49 {				/* common.dtsi:430-433 */
++		compatible = "siliconmitus,sm5705";
++		reg = <0x49>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&sm5705_irq>;
++		interrupt-parent = <&gpa2>;
++		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;	/* common.dtsi:436, IRQF_TRIGGER_LOW in sm5705-irq.c */
++		wakeup-source;				/* common.dtsi:437 */
++
++		charger: charger {
++			compatible = "siliconmitus,sm5705-charger";
++			pinctrl-names = "default";
++			pinctrl-0 = <&chg_en &thm_mux>;	/* common.dtsi:435 */
++			enable-gpios = <&gpd1 3 GPIO_ACTIVE_LOW>;	/* z_batterydata:240 chg_gpio_en, polarity_en 0 */
++			monitored-battery = <&battery>;
++			extcon = <&muic>;
++		};
++	};
++
++	muic: extcon@25 {			/* common.dtsi:461-470 */
++		compatible = "siliconmitus,sm5705-muic";
++		reg = <0x25>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&muic_irq>;
++		interrupt-parent = <&gpa2>;
++		interrupts = <6 IRQ_TYPE_EDGE_FALLING>;	/* common.dtsi:468; edge: sm5705-muic.c:1735 */
++	};
++};
++
++&i2c0 {					/* vendor i2c@13830000, z_batterydata:38 */
++	#address-cells = <1>;
++	#size-cells = <0>;
++	status = "okay";
++
++	fuel-gauge@71 {			/* z_batterydata:40-42 */
++		compatible = "siliconmitus,sm5705-fuelgauge";
++		reg = <0x71>;
++		monitored-battery = <&battery>;
++		power-supplies = <&charger>;
++		siliconmitus,full-permille = <990>;	/* :47 capacity_max */
++		siliconmitus,discharge-table = <0x1400 0x1b8a 0x1d19 0x1d7c 0x1d97 0x1df0 0x1e27 0x1e4f
++						0x1ebf 0x1ebf 0x1f34 0x1ffc 0x206c 0x2090 0x2151 0x2400>;	/* :58 */
++		siliconmitus,q-table = <0x0 0x49 0x12d 0x210 0x4bc 0x684 0x92f 0xda2
++					0x12f9 0x12f9 0x14c1 0x1a18 0x1be0 0x1c96 0x1fca 0x1fda>;	/* :59 */
++		siliconmitus,rce-values = <0x04e1 0x03e6 0x01d7>;		/* :60 */
++		siliconmitus,rs-values = <0x0051 0x147 0x146 0x3800 0x007a>;	/* :61 */
++		siliconmitus,mix-values = <0x0403 0x0004>;			/* :70 */
++		siliconmitus,topoff-soc = <0 3 200>;				/* :63 */
++		siliconmitus,cycle-config = <7 1 3>;				/* :76 */
++		siliconmitus,curr-offset = <1 0x0000>;				/* :67 */
++		siliconmitus,dtcd-value = <0x1>;				/* :65 */
++		siliconmitus,vit-period = <0x3506>;				/* :64 */
++		siliconmitus,misc = <0x0060>;					/* :62 */
++		siliconmitus,volt-cal = <0x8000>;				/* :66 */
++		siliconmitus,p-curr-cal = <0x0061>;				/* :68 */
++		siliconmitus,n-curr-cal = <0x005c>;				/* :69 */
++		siliconmitus,data-version = <0x8>;				/* :83 */
++	};
++};
++
++&pinctrl_alive {			/* vendor pinctrl@139F0000 = gpa banks */
++	sm5705_irq: sm5705-irq-pins {	/* common.dtsi:411-416 if_irq */
++		samsung,pins = "gpa2-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	muic_irq: muic-irq-pins {	/* common.dtsi:418-423 */
++		samsung,pins = "gpa2-6";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++&pinctrl_top {				/* vendor pinctrl@139B0000 = gpd banks */
++	chg_en: chg-en-pins {		/* z_batterydata:23-29 */
++		samsung,pins = "gpd1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	thm_mux: thm-mux-pins {		/* z_batterydata:30-36 */
++		samsung,pins = "gpd4-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++&usbdrd {
++	usb@0 {
++		extcon = <&muic>;
++	};
++};
++
++/* ---- CPU frequency scaling: both clusters on S2MPU05 BUCK1 ---- */
++&cpu0 { cpu-supply = <&vdd_buck1>; };
++&cpu1 { cpu-supply = <&vdd_buck1>; };
++&cpu2 { cpu-supply = <&vdd_buck1>; };
++&cpu3 { cpu-supply = <&vdd_buck1>; };
++&cpu4 { cpu-supply = <&vdd_buck1>; };
++&cpu5 { cpu-supply = <&vdd_buck1>; };
++&cpu6 { cpu-supply = <&vdd_buck1>; };
++&cpu7 { cpu-supply = <&vdd_buck1>; };
+-- 
+2.43.0
+

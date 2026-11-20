@@ -1,0 +1,797 @@
+From 93f02e7ebf0f4f077e40a91b89c40c577337cf92 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:29:03 +0300
+Subject: [PATCH 07/21] arm64: dts: exynos: add Samsung Galaxy Tab Active2 LTE
+
+Add initial support for the Galaxy Tab Active2 LTE (SM-T395): eMMC,
+microSD, QCA9377 Wi-Fi (SDIO) and Bluetooth (UART), keys, hall sensor,
+S2MPU05, USB peripheral, Mali GPU, watchdog, STM FTS8 touchscreen and the
+S6D7AA0 DSI panel (simple-framebuffer until exynos-drm takes over).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ .../bindings/arm/samsung/samsung-boards.yaml  |   1 +
+ arch/arm64/boot/dts/exynos/Makefile           |   1 +
+ .../dts/exynos/exynos7870-gtactive2lte.dts    | 745 ++++++++++++++++++
+ 3 files changed, 747 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+
+diff --git a/Documentation/devicetree/bindings/arm/samsung/samsung-boards.yaml b/Documentation/devicetree/bindings/arm/samsung/samsung-boards.yaml
+index f8e20e602..e65486168 100644
+--- a/Documentation/devicetree/bindings/arm/samsung/samsung-boards.yaml
++++ b/Documentation/devicetree/bindings/arm/samsung/samsung-boards.yaml
+@@ -216,6 +216,7 @@ properties:
+         items:
+           - enum:
+               - samsung,a2corelte               # Samsung Galaxy A2 Core
++              - samsung,gtactive2lte            # Samsung Galaxy Tab Active2 LTE
+               - samsung,j6lte                   # Samsung Galaxy J6
+               - samsung,on7xelte                # Samsung Galaxy J7 Prime
+           - const: samsung,exynos7870
+diff --git a/arch/arm64/boot/dts/exynos/Makefile b/arch/arm64/boot/dts/exynos/Makefile
+index bcca63136..deb2a8cd9 100644
+--- a/arch/arm64/boot/dts/exynos/Makefile
++++ b/arch/arm64/boot/dts/exynos/Makefile
+@@ -8,6 +8,7 @@ dtb-$(CONFIG_ARCH_EXYNOS) += \
+ 	exynos5433-tm2e.dtb		\
+ 	exynos7-espresso.dtb		\
+ 	exynos7870-a2corelte.dtb	\
++	exynos7870-gtactive2lte.dtb	\
+ 	exynos7870-j6lte.dtb		\
+ 	exynos7870-on7xelte.dtb		\
+ 	exynos7885-jackpotlte.dtb	\
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+new file mode 100644
+index 000000000..56df249ab
+--- /dev/null
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+@@ -0,0 +1,745 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Samsung Galaxy Tab Active2 LTE (gtactive2lte, SM-T395) device tree source
++ *
++ * Based on exynos7870-j6lte.dts by Kaustabh Chakraborty.
++ * Hardware facts taken from the vendor exynos7870-gtactive2lte_eur_open_04
++ * device tree (hw rev 04).
++ */
++
++/dts-v1/;
++#include "exynos7870.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/interrupt-controller/irq.h>
++
++/ {
++	model = "Samsung Galaxy Tab Active2 LTE";
++	compatible = "samsung,gtactive2lte", "samsung,exynos7870";
++	chassis-type = "tablet";
++
++	aliases {
++		mmc0 = &mmc0;
++		mmc1 = &mmc1;
++		mmc2 = &mmc2;
++		serial0 = &serial0;
++		serial1 = &serial1;
++		serial2 = &serial2;
++	};
++
++	chosen {
++		#address-cells = <2>;
++		#size-cells = <1>;
++		ranges;
++
++		stdout-path = &serial2;
++
++		/*
++		 * Boot splash framebuffer set up by S-BOOT. Panel memory order
++		 * is R, G, B, X. Removed by exynos-drm once DECON takes over.
++		 */
++		framebuffer@67000000 {
++			compatible = "simple-framebuffer";
++			reg = <0x0 0x67000000 (800 * 1280 * 4)>;
++			width = <800>;
++			height = <1280>;
++			stride = <(800 * 4)>;
++			format = "x8b8g8r8";
++
++			/* keep the panel powered until the DRM panel driver owns it */
++			power-supply = <&vdd_lcd>;
++			vmipi-supply = <&vdd_ldo30>;
++		};
++	};
++
++	gpio-hall-effect-sensor {
++		compatible = "gpio-keys";
++		label = "GPIO Hall Effect Sensor";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&hall_irq>;
++
++		event-hall-effect-sensor {
++			label = "Hall Effect Sensor";
++			gpios = <&gpa0 7 GPIO_ACTIVE_LOW>;
++			linux,input-type = <EV_SW>;
++			linux,code = <SW_LID>;
++			linux,can-disable;
++			wakeup-source;
++		};
++	};
++
++	gpio-keys {
++		compatible = "gpio-keys";
++		label = "GPIO Keys";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&key_power &key_voldown &key_volup &key_home
++			     &key_back &key_recent>;
++
++		key-power {
++			label = "Power Key";
++			gpios = <&gpa0 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_POWER>;
++			wakeup-source;
++		};
++
++		key-voldown {
++			label = "Volume Down Key";
++			gpios = <&gpa2 1 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_VOLUMEDOWN>;
++		};
++
++		key-volup {
++			label = "Volume Up Key";
++			gpios = <&gpa2 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_VOLUMEUP>;
++		};
++
++		key-home {
++			label = "Home Key";
++			gpios = <&gpa1 7 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_HOMEPAGE>;
++			wakeup-source;
++		};
++
++		key-back {
++			label = "Back Key";
++			gpios = <&gpc5 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_BACK>;
++		};
++
++		key-recent {
++			label = "Recent Apps Key";
++			gpios = <&gpd1 4 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_APPSELECT>;
++		};
++	};
++
++	/* S-BOOT fills in the real memory layout; these are safe defaults. */
++	memory@40000000 {
++		device_type = "memory";
++		reg = <0x0 0x40000000 0x3d800000>,
++		      <0x0 0x80000000 0x80000000>;
++	};
++
++	pwrseq_mmc1: pwrseq-mmc1 {
++		compatible = "mmc-pwrseq-simple";
++		/* WLAN_EN */
++		reset-gpios = <&gpd3 6 GPIO_ACTIVE_LOW>;
++	};
++
++	/* LCD_LDO_EN: panel analog supply, enabled after LCD_1P8 (ldo30) */
++	vdd_lcd: regulator-lcd {
++		compatible = "regulator-fixed";
++		regulator-name = "lcd_ldo_en";
++		gpio = <&gpd3 4 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		vin-supply = <&vdd_ldo30>;
++		startup-delay-us = <1000>;
++		off-on-delay-us = <5000>;
++		regulator-boot-on;
++	};
++
++	/* mmc2: vmmc */
++	vdd_fixed_mmc2: regulator-fixed-mmc2 {
++		compatible = "regulator-fixed";
++		regulator-name = "vdd_fixed_mmc2";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&gpc0 0 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	/*
++	 * WLAN_DCDC_EN: main supply of the QCA9377 combo chip. Bluetooth
++	 * (hci_qca, qca9377 has no supply property) depends on it too, so it
++	 * is kept on permanently.
++	 */
++	vdd_wlan: regulator-wlan {
++		compatible = "regulator-fixed";
++		regulator-name = "cnss_dcdc_en";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		startup-delay-us = <4000>;
++		gpio = <&gpf3 0 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-always-on;
++	};
++
++	/* TSP_EN: touchscreen analog supply */
++	vdd_tsp_avdd: regulator-tsp-avdd {
++		compatible = "regulator-fixed";
++		regulator-name = "tsp_avdd";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&gpd4 3 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		pinctrl-names = "default";
++		pinctrl-0 = <&tsp_avdd_en>;
++	};
++
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <1>;
++		ranges;
++
++		ramoops@46e00000 {
++			compatible = "ramoops";
++			reg = <0x0 0x46e00000 0x8000>;
++			console-size = <0x4000>;
++			pmsg-size = <0x4000>;
++		};
++
++		cont_splash_mem: framebuffer@67000000 {
++			reg = <0x0 0x67000000 (800 * 1280 * 4)>;
++			iommu-addresses = <&decon 0x0 0x67000000 (800 * 1280 * 4)>;
++			no-map;
++		};
++
++		/* Used by the secure world (TIMA) in the stock firmware */
++		tima@52a00000 {
++			reg = <0x0 0x52a00000 0x200000>;
++			no-map;
++		};
++
++		/* Cellular / GNSS processors (vendor rmem-3000MB-WUXGA) */
++		cp-init@effff000 {
++			reg = <0x0 0xeffff000 0x1000>;
++			no-map;
++		};
++
++		modem@f0000000 {
++			reg = <0x0 0xf0000000 0x7800000>;
++			no-map;
++		};
++
++		gnss@f7c00000 {
++			reg = <0x0 0xf7c00000 0x400000>;
++			no-map;
++		};
++	};
++};
++
++&decon {
++	memory-region = <&cont_splash_mem>;
++	status = "okay";
++};
++
++&dsi {
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	samsung,burst-clock-frequency = <500000000>;
++	samsung,esc-clock-frequency = <16000000>;
++	samsung,pll-clock-frequency = <26000000>;
++
++	status = "okay";
++
++	panel@0 {
++		compatible = "samsung,s6d7aa0-gtactive2", "samsung,s6d7aa0";
++		reg = <0>;
++
++		power-supply = <&vdd_lcd>;
++		vmipi-supply = <&vdd_ldo30>;
++		reset-gpios = <&gpd4 1 GPIO_ACTIVE_LOW>;
++
++		/* backlight: DCS (0x51) PWM of the S6D7AA0, see driver */
++
++		/* the panel is mounted upside down */
++		rotation = <180>;
++	};
++};
++
++&gpu {
++	status = "okay";
++};
++
++&hsi2c0 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	status = "okay";
++
++	pmic@66 {
++		compatible = "samsung,s2mpu05-pmic";
++		reg = <0x66>;
++		interrupt-parent = <&gpa0>;
++		interrupts = <2 IRQ_TYPE_LEVEL_LOW>;
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&pmic_irq>;
++
++		regulators {
++			vdd_buck1: buck1 {
++				regulator-name = "vdd_buck1";
++				regulator-min-microvolt = <500000>;
++				regulator-max-microvolt = <1300000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_buck2: buck2 {
++				regulator-name = "vdd_buck2";
++				regulator-min-microvolt = <500000>;
++				regulator-max-microvolt = <1300000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_buck3: buck3 {
++				regulator-name = "vdd_buck3";
++				regulator-min-microvolt = <500000>;
++				regulator-max-microvolt = <1300000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_buck4: buck4 {
++				regulator-name = "vdd_buck4";
++				regulator-min-microvolt = <1200000>;
++				regulator-max-microvolt = <1500000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_buck5: buck5 {
++				regulator-name = "vdd_buck5";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <2100000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_ldo1: ldo1 {
++				regulator-name = "vdd_ldo1";
++				regulator-min-microvolt = <650000>;
++				regulator-max-microvolt = <1350000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			/* mmc2: vqmmc */
++			vdd_ldo2: ldo2 {
++				regulator-name = "vdd_ldo2";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <2800000>;
++				regulator-ramp-delay = <12000>;
++			};
++
++			vdd_ldo3: ldo3 {
++				regulator-name = "vdd_ldo3";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <2375000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_ldo4: ldo4 {
++				regulator-name = "vdd_ldo4";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <1350000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_ldo5: ldo5 {
++				regulator-name = "vdd_ldo5";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <1350000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_ldo6: ldo6 {
++				regulator-name = "vdd_ldo6";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <1350000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_ldo7: ldo7 {
++				regulator-name = "vdd_ldo7";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <2375000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			/* usbdrd: vdd33 */
++			vdd_ldo8: ldo8 {
++				regulator-name = "vdd_ldo8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <3375000>;
++				regulator-ramp-delay = <12000>;
++			};
++
++			vdd_ldo9: ldo9 {
++				regulator-name = "vdd_ldo9";
++				regulator-min-microvolt = <650000>;
++				regulator-max-microvolt = <1350000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			vdd_ldo10: ldo10 {
++				regulator-name = "vdd_ldo10";
++				regulator-min-microvolt = <650000>;
++				regulator-max-microvolt = <1350000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			/* audio codec (cod3026x) vdd */
++			vdd_ldo25: ldo25 {
++				regulator-name = "vdd_ldo25";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <2375000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			/* mmc0: vmmc */
++			vdd_ldo26: ldo26 {
++				regulator-name = "vdd_ldo26";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <3375000>;
++				regulator-ramp-delay = <12000>;
++			};
++
++			/* mmc0: vqmmc */
++			vdd_ldo27: ldo27 {
++				regulator-name = "vdd_ldo27";
++				regulator-min-microvolt = <800000>;
++				regulator-max-microvolt = <2375000>;
++				regulator-ramp-delay = <12000>;
++			};
++
++			/* GRIP_2P8: grip sensors */
++			vdd_ldo29: ldo29 {
++				regulator-name = "vdd_ldo29";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			/* LCD_1P8: panel vmipi / vddi */
++			vdd_ldo30: ldo30 {
++				regulator-name = "vdd_ldo30";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-boot-on;
++			};
++
++			vdd_ldo31: ldo31 {
++				regulator-name = "vdd_ldo31";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++				regulator-ramp-delay = <12000>;
++				regulator-boot-on;
++				regulator-always-on;
++			};
++
++			/* tsp_dvdd: touchscreen digital supply */
++			vdd_ldo32: ldo32 {
++				regulator-name = "vdd_ldo32";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++			};
++
++			/* VDD_CAM_AF_2P8 */
++			vdd_ldo33: ldo33 {
++				regulator-name = "vdd_ldo33";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++			};
++
++			/* VDDIO_1.8V_CAM */
++			vdd_ldo34: ldo34 {
++				regulator-name = "vdd_ldo34";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++			};
++
++			/* VDD_CAM_SENSOR_A2P8 */
++			vdd_ldo35: ldo35 {
++				regulator-name = "vdd_ldo35";
++				regulator-min-microvolt = <2800000>;
++				regulator-max-microvolt = <2800000>;
++			};
++		};
++	};
++};
++
++/* Touchscreen bus (vendor i2c@13840000, pins gpc3-0/1) */
++&i2c1 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	samsung,i2c-sda-delay = <100>;
++	samsung,i2c-max-bus-freq = <400000>;
++
++	status = "okay";
++
++	touchscreen@49 {
++		compatible = "st,fts8cd56", "st,fts8";
++		reg = <0x49>;
++
++		interrupt-parent = <&gpd1>;
++		interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&touch_irq>;
++
++		avdd-supply = <&vdd_tsp_avdd>;
++		vdd-supply = <&vdd_ldo32>;
++
++		/* raw 0..1599 x 0..2559, 2x the panel resolution */
++		touchscreen-size-x = <1600>;
++		touchscreen-size-y = <2560>;
++	};
++};
++
++/* Interface PMIC bus (vendor i2c@13870000): SM5705 @0x49, MUIC @0x25 */
++&i2c4 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	samsung,i2c-sda-delay = <100>;
++	samsung,i2c-max-bus-freq = <400000>;
++
++	status = "okay";
++
++	/* SM5705 charger/fuel gauge/MUIC: added by the power agent (notes/power.md) */
++};
++
++&mmc0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&sd0_clk &sd0_cmd &sd0_rdqs &sd0_bus1 &sd0_bus4 &sd0_bus8>;
++
++	vmmc-supply = <&vdd_ldo26>;
++	vqmmc-supply = <&vdd_ldo27>;
++
++	fifo-depth = <64>;
++	samsung,dw-mshc-ciu-div = <3>;
++	samsung,dw-mshc-sdr-timing = <0 4>;
++	samsung,dw-mshc-ddr-timing = <2 4>;
++	non-removable;
++
++	status = "okay";
++};
++
++/* Qualcomm QCA9377 Wi-Fi (ath10k_sdio, enumerated by SDIO id) */
++&mmc1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&sd1_clk &sd1_cmd &sd1_bus1 &sd1_bus4>;
++
++	mmc-pwrseq = <&pwrseq_mmc1>;
++	vmmc-supply = <&vdd_wlan>;
++
++	bus-width = <4>;
++	fifo-depth = <64>;
++	samsung,dw-mshc-ciu-div = <3>;
++	samsung,dw-mshc-sdr-timing = <0 3>;
++	samsung,dw-mshc-ddr-timing = <1 2>;
++	non-removable;
++	cap-sd-highspeed;
++	cap-sdio-irq;
++	keep-power-in-suspend;
++
++	status = "okay";
++};
++
++/* microSD slot */
++&mmc2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_bus1 &sd2_bus4 &sd2_cd>;
++
++	vmmc-supply = <&vdd_fixed_mmc2>;
++	vqmmc-supply = <&vdd_ldo2>;
++
++	bus-width = <4>;
++	card-detect-delay = <200>;
++	cd-gpios = <&gpa0 1 GPIO_ACTIVE_LOW>;
++	fifo-depth = <64>;
++	samsung,dw-mshc-ciu-div = <3>;
++	samsung,dw-mshc-sdr-timing = <0 3>;
++	samsung,dw-mshc-ddr-timing = <1 2>;
++	sd-uhs-sdr50;
++	sd-uhs-sdr104;
++	disable-wp;
++
++	status = "okay";
++};
++
++&oscclk {
++	clock-frequency = <26000000>;
++};
++
++&pinctrl_alive {
++	hall_irq: hall-irq-pins {
++		samsung,pins = "gpa0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	key_home: key-home-pins {
++		samsung,pins = "gpa1-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	key_power: key-power-pins {
++		samsung,pins = "gpa0-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	key_voldown: key-voldown-pins {
++		samsung,pins = "gpa2-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	key_volup: key-volup-pins {
++		samsung,pins = "gpa2-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	pmic_irq: pmic-irq-pins {
++		samsung,pins = "gpa0-2";
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR4>;
++	};
++
++	sd2_cd: sd2-cd-pins {
++		samsung,pins = "gpa0-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++&pinctrl_top {
++	bt_enable: bt-enable-pins {
++		samsung,pins = "gpd4-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
++		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	/* BT_WAKE: not used by hci_qca, keep it driven low like the vendor */
++	bt_wake: bt-wake-pins {
++		samsung,pins = "gpd4-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-val = <0>;
++	};
++
++	key_back: key-back-pins {
++		samsung,pins = "gpc5-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	key_recent: key-recent-pins {
++		samsung,pins = "gpd1-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	tsp_avdd_en: tsp-avdd-en-pins {
++		samsung,pins = "gpd4-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++
++	touch_irq: touch-irq-pins {
++		samsung,pins = "gpd1-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++/* QCA9377 Bluetooth (vendor ttySAC0 = UART @0x13810000) */
++&serial1 {
++	status = "okay";
++
++	bluetooth {
++		compatible = "qcom,qca9377-bt";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&bt_enable &bt_wake &bt_hostwake>;
++
++		enable-gpios = <&gpd4 0 GPIO_ACTIVE_HIGH>;
++		max-speed = <3000000>;
++	};
++};
++
++&sd1_bus1 {
++	samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR2>;
++};
++
++&sd1_bus4 {
++	samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR2>;
++};
++
++&sd1_clk {
++	samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR2>;
++};
++
++&sd1_cmd {
++	samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR2>;
++};
++
++&serial2 {
++	status = "okay";
++};
++
++&usbdrd {
++	vdd33-supply = <&vdd_ldo8>;
++
++	status = "okay";
++
++	usb@0 {
++		/*
++		 * Peripheral only for now; switch to "otg" once the SM5705
++		 * MUIC driver provides a usb-role-switch.
++		 */
++		dr_mode = "peripheral";
++		maximum-speed = "high-speed";
++	};
++};
++
++&watchdog_cl0 {
++	status = "okay";
++};
+-- 
+2.43.0
+

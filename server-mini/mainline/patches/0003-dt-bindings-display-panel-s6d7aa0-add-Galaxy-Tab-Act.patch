@@ -1,0 +1,50 @@
+From 4a292d0023262c41bd88c5b0dc9bff2a5f48ef29 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:29:02 +0300
+Subject: [PATCH 03/21] dt-bindings: display: panel: s6d7aa0: add Galaxy Tab
+ Active2 panel
+
+Add the 800x1280 BOE panel (S6D7AA0 controller) of the Samsung Galaxy Tab
+Active2 and allow the common rotation property.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ .../devicetree/bindings/display/panel/samsung,s6d7aa0.yaml | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/display/panel/samsung,s6d7aa0.yaml b/Documentation/devicetree/bindings/display/panel/samsung,s6d7aa0.yaml
+index 939da6511..b028c3075 100644
+--- a/Documentation/devicetree/bindings/display/panel/samsung,s6d7aa0.yaml
++++ b/Documentation/devicetree/bindings/display/panel/samsung,s6d7aa0.yaml
+@@ -22,6 +22,8 @@ properties:
+           - samsung,lsl080al03
+           # 1024x768 LTL101AT01 panel
+           - samsung,ltl101at01
++          # 800x1280 BOE panel of the Galaxy Tab Active2 (SM-T390/T395)
++          - samsung,s6d7aa0-gtactive2
+       - const: samsung,s6d7aa0
+ 
+   reg:
+@@ -30,7 +32,8 @@ properties:
+   backlight:
+     description:
+       Backlight to use for the panel. If this property is set on panels
+-      that have DSI-based backlight control (LSL080AL03 and LTL101AT01),
++      that have DSI-based backlight control (LSL080AL03, LTL101AT01 and the
++      Galaxy Tab Active2 panel),
+       it overrides the DSI-based backlight.
+ 
+   reset-gpios:
+@@ -44,6 +47,8 @@ properties:
+   vmipi-supply:
+     description: VMIPI supply, usually 1.8v.
+ 
++  rotation: true
++
+ required:
+   - compatible
+   - reg
+-- 
+2.43.0
+

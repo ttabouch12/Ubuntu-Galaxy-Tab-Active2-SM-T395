@@ -1,0 +1,756 @@
+From 0220e92afdf7bac39dc2a76c10106dbc7cc287b6 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:17:54 +0300
+Subject: [PATCH 11/21] power: supply: sm5705_charger: add Silicon Mitus SM5705
+ charger driver
+
+Add a power_supply driver for the charger cell of the SM5705 MFD. It
+reports online, status, charge type, health and the programmed limits,
+and handles the VBUS, battery and thermal interrupts of the chip.
+
+The float voltage and termination current come from monitored-battery.
+The input current limit and the fast charge current are selected from
+conservative devicetree limits (vendor defaults) according to the cable
+reported by the MUIC extcon device, falling back to the SDP limits. The
+chip's top-off timer, auto-stop, AICL and thermal protection are enabled
+as in the vendor driver; the charge safety timers are left untouched.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHWjrzX28CzyNMEnVDk
+---
+ .../bindings/mfd/siliconmitus,sm5705.yaml     |  11 +
+ .../supply/siliconmitus,sm5705-charger.yaml   |  76 +++
+ drivers/power/supply/Kconfig                  |  11 +
+ drivers/power/supply/Makefile                 |   1 +
+ drivers/power/supply/sm5705_charger.c         | 567 ++++++++++++++++++
+ 5 files changed, 666 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-charger.yaml
+ create mode 100644 drivers/power/supply/sm5705_charger.c
+
+diff --git a/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml b/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml
+index e80701e1b..3065f50f4 100644
+--- a/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml
++++ b/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml
+@@ -28,6 +28,9 @@ properties:
+ 
+   wakeup-source: true
+ 
++  charger:
++    $ref: /schemas/power/supply/siliconmitus,sm5705-charger.yaml#
++
+ required:
+   - compatible
+   - reg
+@@ -37,6 +40,7 @@ additionalProperties: false
+ 
+ examples:
+   - |
++    #include <dt-bindings/gpio/gpio.h>
+     #include <dt-bindings/interrupt-controller/irq.h>
+ 
+     i2c {
+@@ -49,5 +53,12 @@ examples:
+             interrupt-parent = <&gpa2>;
+             interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
+             wakeup-source;
++
++            charger {
++                compatible = "siliconmitus,sm5705-charger";
++                enable-gpios = <&gpd1 3 GPIO_ACTIVE_LOW>;
++                monitored-battery = <&battery>;
++                extcon = <&muic>;
++            };
+         };
+     };
+diff --git a/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-charger.yaml b/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-charger.yaml
+new file mode 100644
+index 000000000..c29ff4f39
+--- /dev/null
++++ b/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-charger.yaml
+@@ -0,0 +1,76 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/power/supply/siliconmitus,sm5705-charger.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Silicon Mitus SM5705 battery charger
++
++maintainers:
++  - Linux Exynos7870 maintainers <linux-samsung-soc@vger.kernel.org>
++
++description:
++  Battery charger function of the SM5705 companion chip, a child of the
++  siliconmitus,sm5705 MFD node. The float voltage and the termination
++  current are taken from the monitored battery. The input current limit and
++  the fast charge current are selected according to the cable reported by the
++  MUIC extcon device.
++
++allOf:
++  - $ref: power-supply.yaml#
++
++properties:
++  compatible:
++    const: siliconmitus,sm5705-charger
++
++  enable-gpios:
++    maxItems: 1
++    description:
++      Charging enable pin. The pin is active low on the hardware, so use
++      GPIO_ACTIVE_LOW.
++
++  monitored-battery:
++    description:
++      Battery with constant-charge-voltage-max-microvolt (required, 4.01 V to
++      4.62 V in 10 mV steps) and optionally charge-term-current-microamp
++      (default 250 mA).
++
++  extcon:
++    maxItems: 1
++    description:
++      MUIC extcon device (siliconmitus,sm5705-muic) that reports the
++      attached cable. Without it the SDP limits are always used.
++
++  siliconmitus,sdp-limits-microamp:
++    description:
++      Input current limit and fast charge current for a standard downstream
++      port and for unknown cables.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 2
++    maxItems: 2
++    default: [450000, 450000]
++
++  siliconmitus,cdp-limits-microamp:
++    description:
++      Input current limit and fast charge current for a charging downstream
++      port.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 2
++    maxItems: 2
++    default: [1000000, 1000000]
++
++  siliconmitus,dcp-limits-microamp:
++    description:
++      Input current limit and fast charge current for a dedicated charger
++      (vendor "TA" values).
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 2
++    maxItems: 2
++    default: [1800000, 2100000]
++
++required:
++  - compatible
++  - enable-gpios
++  - monitored-battery
++
++unevaluatedProperties: false
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index 4e86bd18f..91435233f 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -842,6 +842,17 @@ config BATTERY_SM5705
+ 	  Exynos7870 devices. It reports the battery voltage, current,
+ 	  temperature and state of charge.
+ 
++config CHARGER_SM5705
++	tristate "Silicon Mitus SM5705 battery charger"
++	depends on MFD_SM5705
++	select EXTCON
++	help
++	  Say Y here to enable support for the battery charger of the
++	  Silicon Mitus SM5705 companion chip, found on some Samsung
++	  Exynos7870 devices. The charger takes its VBUS state from the
++	  chip's own interrupts and uses conservative input and charge
++	  current limits from the device tree.
++
+ config CHARGER_TPS65090
+ 	tristate "TPS65090 battery charger driver"
+ 	depends on MFD_TPS65090
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index f78771206..3f6f515dc 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -106,6 +106,7 @@ obj-$(CONFIG_CHARGER_BQ256XX)	+= bq256xx_charger.o
+ obj-$(CONFIG_CHARGER_RK817)	+= rk817_charger.o
+ obj-$(CONFIG_CHARGER_SMB347)	+= smb347-charger.o
+ obj-$(CONFIG_BATTERY_SM5705)	+= sm5705_fuelgauge.o
++obj-$(CONFIG_CHARGER_SM5705)	+= sm5705_charger.o
+ obj-$(CONFIG_CHARGER_TPS65090)	+= tps65090-charger.o
+ obj-$(CONFIG_CHARGER_TPS65217)	+= tps65217_charger.o
+ obj-$(CONFIG_AXP288_FUEL_GAUGE) += axp288_fuel_gauge.o
+diff --git a/drivers/power/supply/sm5705_charger.c b/drivers/power/supply/sm5705_charger.c
+new file mode 100644
+index 000000000..60802cd1e
+--- /dev/null
++++ b/drivers/power/supply/sm5705_charger.c
+@@ -0,0 +1,567 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Battery charger driver for the Silicon Mitus SM5705 companion chip
++ *
++ * Cell of the sm5705 MFD core. The input current and fast charge current are
++ * selected from devicetree limits according to the cable reported by the MUIC
++ * extcon device (SDP, CDP or dedicated charger). Without cable information the
++ * SDP limits are used. The charge safety timers, the top-off timer and the
++ * thermal protection of the chip are left enabled.
++ *
++ * Reference: Samsung vendor kernel drivers/ifpmic/battery_v2/sm5705_charger.c
++ */
++
++#include <linux/array_size.h>
++#include <linux/bitfield.h>
++#include <linux/bits.h>
++#include <linux/cleanup.h>
++#include <linux/err.h>
++#include <linux/extcon.h>
++#include <linux/gpio/consumer.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/sm5705.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/power_supply.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++#include <linux/units.h>
++
++/* CNTL: operating mode in [2:0] */
++#define SM5705_CNTL_OP_MODE_MASK	GENMASK(2, 0)
++#define SM5705_OP_MODE_SUSPEND		0x0
++#define SM5705_OP_MODE_CHG_ON		0x5
++
++/* VBUSCNTL: input current limit, 100 mA + 25 mA * n, 7 bits */
++#define SM5705_VBUSCNTL_MASK		GENMASK(6, 0)
++#define SM5705_INPUT_LIMIT_MIN_UA	(100 * MILLI)
++#define SM5705_INPUT_LIMIT_STEP_UA	(25 * MILLI)
++#define SM5705_INPUT_LIMIT_MAX_UA	(3275 * MILLI)
++
++/* CHGCNTL2: fast charge current from VBUS, 100 mA + 50 mA * n, 6 bits */
++#define SM5705_CHGCNTL2_MASK		GENMASK(5, 0)
++#define SM5705_FASTCHG_MIN_UA		(100 * MILLI)
++#define SM5705_FASTCHG_STEP_UA		(50 * MILLI)
++#define SM5705_FASTCHG_MAX_UA		(3250 * MILLI)
++
++/* CHGCNTL4: battery regulation voltage [5:0], auto-stop [6] */
++#define SM5705_CHGCNTL4_BATREG_MASK	GENMASK(5, 0)
++#define SM5705_CHGCNTL4_AUTOSTOP	BIT(6)
++/* offset 2 = 4.01 V, 10 mV per step up to 4.62 V */
++#define SM5705_BATREG_MIN_UV		4010000
++#define SM5705_BATREG_MAX_UV		4620000
++#define SM5705_BATREG_STEP_UV		10000
++#define SM5705_BATREG_BASE_OFFSET	2
++
++/* CHGCNTL5: top-off current [3:0], buck/boost frequency [5:4] */
++#define SM5705_CHGCNTL5_TOPOFF_MASK	GENMASK(3, 0)
++#define SM5705_CHGCNTL5_FREQSEL_MASK	GENMASK(5, 4)
++#define SM5705_FREQSEL_3MHZ		0x0
++#define SM5705_TOPOFF_MIN_UA		(100 * MILLI)
++#define SM5705_TOPOFF_STEP_UA		(25 * MILLI)
++#define SM5705_TOPOFF_MAX_UA		(475 * MILLI)
++
++/* CHGCNTL7: AICL threshold [7:6], AICL enable [5], OVP select [2], autoset [1] */
++#define SM5705_CHGCNTL7_AICLTH_MASK	GENMASK(7, 6)
++#define SM5705_CHGCNTL7_AICL_EN		BIT(5)
++#define SM5705_CHGCNTL7_OVPSEL		BIT(2)
++#define SM5705_CHGCNTL7_AUTOSET		BIT(1)
++#define SM5705_AICLTH_4500MV		0x0
++
++/* CHGCNTL8: top-off timer [4:3] */
++#define SM5705_CHGCNTL8_TOPOFF_TMR_MASK	GENMASK(4, 3)
++#define SM5705_TOPOFF_TMR_45MIN		0x3
++
++enum sm5705_cable {
++	SM5705_CABLE_SDP,
++	SM5705_CABLE_CDP,
++	SM5705_CABLE_DCP,
++	SM5705_NUM_CABLES,
++};
++
++struct sm5705_charger {
++	struct device *dev;
++	struct regmap *regmap;
++	struct power_supply *psy;
++	struct gpio_desc *enable_gpio;
++	struct extcon_dev *edev;
++	struct notifier_block extcon_nb;
++	struct mutex lock;
++
++	/* [cable][0] = input current limit, [cable][1] = fast charge current */
++	u32 limits[SM5705_NUM_CABLES][2];
++	u32 float_uv;
++	u32 topoff_ua;
++};
++
++static const char * const sm5705_limit_props[SM5705_NUM_CABLES] = {
++	[SM5705_CABLE_SDP] = "siliconmitus,sdp-limits-microamp",
++	[SM5705_CABLE_CDP] = "siliconmitus,cdp-limits-microamp",
++	[SM5705_CABLE_DCP] = "siliconmitus,dcp-limits-microamp",
++};
++
++static int sm5705_chg_set_input_limit(struct sm5705_charger *chg, u32 ua)
++{
++	u32 val;
++
++	ua = clamp(ua, SM5705_INPUT_LIMIT_MIN_UA, SM5705_INPUT_LIMIT_MAX_UA);
++	val = (ua - SM5705_INPUT_LIMIT_MIN_UA) / SM5705_INPUT_LIMIT_STEP_UA;
++
++	return regmap_update_bits(chg->regmap, SM5705_REG_VBUSCNTL,
++				  SM5705_VBUSCNTL_MASK, val);
++}
++
++static int sm5705_chg_set_fast_charge(struct sm5705_charger *chg, u32 ua)
++{
++	u32 val;
++
++	ua = clamp(ua, SM5705_FASTCHG_MIN_UA, SM5705_FASTCHG_MAX_UA);
++	val = (ua - SM5705_FASTCHG_MIN_UA) / SM5705_FASTCHG_STEP_UA;
++
++	return regmap_update_bits(chg->regmap, SM5705_REG_CHGCNTL2,
++				  SM5705_CHGCNTL2_MASK, val);
++}
++
++static int sm5705_chg_set_float_voltage(struct sm5705_charger *chg, u32 uv)
++{
++	u32 val;
++
++	if (uv < SM5705_BATREG_MIN_UV || uv > SM5705_BATREG_MAX_UV)
++		return -EINVAL;
++
++	val = (uv - SM5705_BATREG_MIN_UV) / SM5705_BATREG_STEP_UV +
++	      SM5705_BATREG_BASE_OFFSET;
++
++	return regmap_update_bits(chg->regmap, SM5705_REG_CHGCNTL4,
++				  SM5705_CHGCNTL4_BATREG_MASK, val);
++}
++
++static int sm5705_chg_set_topoff(struct sm5705_charger *chg, u32 ua)
++{
++	u32 val;
++
++	ua = clamp(ua, SM5705_TOPOFF_MIN_UA, SM5705_TOPOFF_MAX_UA);
++	val = (ua - SM5705_TOPOFF_MIN_UA) / SM5705_TOPOFF_STEP_UA;
++
++	return regmap_update_bits(chg->regmap, SM5705_REG_CHGCNTL5,
++				  SM5705_CHGCNTL5_TOPOFF_MASK, val);
++}
++
++static enum sm5705_cable sm5705_chg_get_cable(struct sm5705_charger *chg)
++{
++	if (!chg->edev)
++		return SM5705_CABLE_SDP;
++
++	if (extcon_get_state(chg->edev, EXTCON_CHG_USB_DCP) > 0)
++		return SM5705_CABLE_DCP;
++	if (extcon_get_state(chg->edev, EXTCON_CHG_USB_CDP) > 0)
++		return SM5705_CABLE_CDP;
++
++	return SM5705_CABLE_SDP;
++}
++
++/* Program the limits for the present cable; called with chg->lock held. */
++static int sm5705_chg_apply_limits(struct sm5705_charger *chg)
++{
++	enum sm5705_cable cable = sm5705_chg_get_cable(chg);
++	int ret;
++
++	ret = sm5705_chg_set_input_limit(chg, chg->limits[cable][0]);
++	if (ret)
++		return ret;
++
++	return sm5705_chg_set_fast_charge(chg, chg->limits[cable][1]);
++}
++
++static int sm5705_chg_hw_init(struct sm5705_charger *chg)
++{
++	struct regmap *regmap = chg->regmap;
++	int ret;
++
++	/* Charging stays disabled (enable pin deasserted) until all is set. */
++	ret = sm5705_chg_set_float_voltage(chg, chg->float_uv);
++	if (ret)
++		return ret;
++
++	ret = sm5705_chg_set_topoff(chg, chg->topoff_ua);
++	if (ret)
++		return ret;
++
++	/* Stop charging when the top-off timer expires (emergency stop) */
++	ret = regmap_set_bits(regmap, SM5705_REG_CHGCNTL4,
++			      SM5705_CHGCNTL4_AUTOSTOP);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(regmap, SM5705_REG_CHGCNTL8,
++				 SM5705_CHGCNTL8_TOPOFF_TMR_MASK,
++				 FIELD_PREP(SM5705_CHGCNTL8_TOPOFF_TMR_MASK,
++					    SM5705_TOPOFF_TMR_45MIN));
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(regmap, SM5705_REG_CHGCNTL5,
++				 SM5705_CHGCNTL5_FREQSEL_MASK,
++				 FIELD_PREP(SM5705_CHGCNTL5_FREQSEL_MASK,
++					    SM5705_FREQSEL_3MHZ));
++	if (ret)
++		return ret;
++
++	/* AICL at 4.5 V, automatic setting, fixed OVP selection (vendor init) */
++	ret = regmap_update_bits(regmap, SM5705_REG_CHGCNTL7,
++				 SM5705_CHGCNTL7_AICLTH_MASK |
++				 SM5705_CHGCNTL7_AICL_EN |
++				 SM5705_CHGCNTL7_OVPSEL |
++				 SM5705_CHGCNTL7_AUTOSET,
++				 FIELD_PREP(SM5705_CHGCNTL7_AICLTH_MASK,
++					    SM5705_AICLTH_4500MV) |
++				 SM5705_CHGCNTL7_AICL_EN |
++				 SM5705_CHGCNTL7_OVPSEL |
++				 SM5705_CHGCNTL7_AUTOSET);
++	if (ret)
++		return ret;
++
++	ret = sm5705_chg_apply_limits(chg);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(regmap, SM5705_REG_CNTL,
++				 SM5705_CNTL_OP_MODE_MASK,
++				 FIELD_PREP(SM5705_CNTL_OP_MODE_MASK,
++					    SM5705_OP_MODE_CHG_ON));
++	if (ret)
++		return ret;
++
++	gpiod_set_value_cansleep(chg->enable_gpio, 1);
++
++	return 0;
++}
++
++static void sm5705_chg_update(struct sm5705_charger *chg)
++{
++	int ret;
++
++	scoped_guard(mutex, &chg->lock) {
++		ret = sm5705_chg_apply_limits(chg);
++		if (ret)
++			dev_err(chg->dev, "cannot update current limits: %d\n", ret);
++	}
++
++	power_supply_changed(chg->psy);
++}
++
++static irqreturn_t sm5705_chg_irq(int irq, void *data)
++{
++	struct sm5705_charger *chg = data;
++	unsigned int st1 = 0, st2 = 0, st3 = 0;
++
++	regmap_read(chg->regmap, SM5705_REG_STATUS1, &st1);
++	regmap_read(chg->regmap, SM5705_REG_STATUS2, &st2);
++	regmap_read(chg->regmap, SM5705_REG_STATUS3, &st3);
++
++	if (st1 & SM5705_STATUS1_VBUSOVP)
++		dev_warn(chg->dev, "VBUS overvoltage\n");
++	if (st2 & SM5705_STATUS2_BATOVP)
++		dev_warn(chg->dev, "battery overvoltage\n");
++	if (st3 & SM5705_STATUS3_THEMSHDN)
++		dev_warn(chg->dev, "thermal shutdown\n");
++	if (st3 & (SM5705_STATUS3_PRETMROFF | SM5705_STATUS3_FASTTMROFF))
++		dev_warn(chg->dev, "charge timer expired\n");
++
++	sm5705_chg_update(chg);
++
++	return IRQ_HANDLED;
++}
++
++static int sm5705_chg_extcon_notify(struct notifier_block *nb,
++				    unsigned long event, void *ptr)
++{
++	struct sm5705_charger *chg = container_of(nb, struct sm5705_charger,
++						  extcon_nb);
++
++	sm5705_chg_update(chg);
++
++	return NOTIFY_OK;
++}
++
++static int sm5705_chg_get_health(struct sm5705_charger *chg)
++{
++	unsigned int st1, st2, st3;
++	int ret;
++
++	ret = regmap_read(chg->regmap, SM5705_REG_STATUS1, &st1);
++	if (!ret)
++		ret = regmap_read(chg->regmap, SM5705_REG_STATUS2, &st2);
++	if (!ret)
++		ret = regmap_read(chg->regmap, SM5705_REG_STATUS3, &st3);
++	if (ret)
++		return POWER_SUPPLY_HEALTH_UNKNOWN;
++
++	if (st3 & SM5705_STATUS3_THEMSHDN)
++		return POWER_SUPPLY_HEALTH_OVERHEAT;
++	if (st3 & (SM5705_STATUS3_PRETMROFF | SM5705_STATUS3_FASTTMROFF))
++		return POWER_SUPPLY_HEALTH_SAFETY_TIMER_EXPIRE;
++	if (st1 & SM5705_STATUS1_VBUSOVP || st2 & SM5705_STATUS2_BATOVP)
++		return POWER_SUPPLY_HEALTH_OVERVOLTAGE;
++	if (st1 & SM5705_STATUS1_VBUSUVLO)
++		return POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
++
++	return POWER_SUPPLY_HEALTH_GOOD;
++}
++
++static int sm5705_chg_get_property(struct power_supply *psy,
++				   enum power_supply_property psp,
++				   union power_supply_propval *val)
++{
++	struct sm5705_charger *chg = power_supply_get_drvdata(psy);
++	unsigned int st1, st2, reg;
++	int ret;
++
++	guard(mutex)(&chg->lock);
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_ONLINE:
++		ret = regmap_read(chg->regmap, SM5705_REG_STATUS1, &st1);
++		if (ret)
++			return ret;
++		val->intval = !!(st1 & SM5705_STATUS1_VBUSPOK);
++		return 0;
++	case POWER_SUPPLY_PROP_STATUS:
++		ret = regmap_read(chg->regmap, SM5705_REG_STATUS1, &st1);
++		if (!ret)
++			ret = regmap_read(chg->regmap, SM5705_REG_STATUS2, &st2);
++		if (ret)
++			return ret;
++		if (!(st1 & SM5705_STATUS1_VBUSPOK))
++			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
++		else if (st2 & SM5705_STATUS2_DONE)
++			val->intval = POWER_SUPPLY_STATUS_FULL;
++		else if (st2 & SM5705_STATUS2_CHGON)
++			val->intval = POWER_SUPPLY_STATUS_CHARGING;
++		else
++			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
++		return 0;
++	case POWER_SUPPLY_PROP_CHARGE_TYPE:
++		ret = regmap_read(chg->regmap, SM5705_REG_STATUS2, &st2);
++		if (ret)
++			return ret;
++		if (st2 & SM5705_STATUS2_CHGON)
++			val->intval = POWER_SUPPLY_CHARGE_TYPE_FAST;
++		else
++			val->intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
++		return 0;
++	case POWER_SUPPLY_PROP_HEALTH:
++		val->intval = sm5705_chg_get_health(chg);
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_MAX:
++		ret = regmap_read(chg->regmap, SM5705_REG_VBUSCNTL, &reg);
++		if (ret)
++			return ret;
++		val->intval = SM5705_INPUT_LIMIT_MIN_UA +
++			      (reg & SM5705_VBUSCNTL_MASK) * SM5705_INPUT_LIMIT_STEP_UA;
++		return 0;
++	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
++		ret = regmap_read(chg->regmap, SM5705_REG_CHGCNTL2, &reg);
++		if (ret)
++			return ret;
++		val->intval = SM5705_FASTCHG_MIN_UA +
++			      (reg & SM5705_CHGCNTL2_MASK) * SM5705_FASTCHG_STEP_UA;
++		return 0;
++	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
++		ret = regmap_read(chg->regmap, SM5705_REG_CHGCNTL4, &reg);
++		if (ret)
++			return ret;
++		reg &= SM5705_CHGCNTL4_BATREG_MASK;
++		if (reg < SM5705_BATREG_BASE_OFFSET)
++			return -ENODATA;
++		val->intval = SM5705_BATREG_MIN_UV +
++			      (reg - SM5705_BATREG_BASE_OFFSET) * SM5705_BATREG_STEP_UV;
++		return 0;
++	case POWER_SUPPLY_PROP_MANUFACTURER:
++		val->strval = "Silicon Mitus";
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static const enum power_supply_property sm5705_chg_props[] = {
++	POWER_SUPPLY_PROP_ONLINE,
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_CHARGE_TYPE,
++	POWER_SUPPLY_PROP_HEALTH,
++	POWER_SUPPLY_PROP_CURRENT_MAX,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
++	POWER_SUPPLY_PROP_MANUFACTURER,
++};
++
++static const struct power_supply_desc sm5705_chg_desc = {
++	.name		= "sm5705-charger",
++	.type		= POWER_SUPPLY_TYPE_USB,
++	.properties	= sm5705_chg_props,
++	.num_properties	= ARRAY_SIZE(sm5705_chg_props),
++	.get_property	= sm5705_chg_get_property,
++};
++
++static int sm5705_chg_parse_dt(struct sm5705_charger *chg)
++{
++	struct device *dev = chg->dev;
++	struct power_supply_battery_info *info;
++	struct power_supply *psy = chg->psy;
++	int i, ret, float_uv, topoff_ua;
++
++	/* Conservative defaults: SDP, CDP and the vendor "TA" values */
++	static const u32 defaults[SM5705_NUM_CABLES][2] = {
++		[SM5705_CABLE_SDP] = { 450000, 450000 },
++		[SM5705_CABLE_CDP] = { 1000000, 1000000 },
++		[SM5705_CABLE_DCP] = { 1800000, 2100000 },
++	};
++
++	for (i = 0; i < SM5705_NUM_CABLES; i++) {
++		chg->limits[i][0] = defaults[i][0];
++		chg->limits[i][1] = defaults[i][1];
++		if (device_property_present(dev, sm5705_limit_props[i])) {
++			ret = device_property_read_u32_array(dev, sm5705_limit_props[i],
++							     chg->limits[i], 2);
++			if (ret)
++				return dev_err_probe(dev, ret, "bad %s\n",
++						     sm5705_limit_props[i]);
++		}
++	}
++
++	/* The battery model gives the float voltage and the top-off current */
++	ret = power_supply_get_battery_info(psy, &info);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "monitored-battery with constant-charge-voltage-max-microvolt is required\n");
++
++	float_uv = info->constant_charge_voltage_max_uv;
++	topoff_ua = info->charge_term_current_ua;
++	power_supply_put_battery_info(psy, info);
++
++	if (float_uv <= 0)
++		return dev_err_probe(dev, -EINVAL,
++				     "constant-charge-voltage-max-microvolt missing in battery\n");
++
++	chg->float_uv = float_uv;
++	chg->topoff_ua = topoff_ua > 0 ? topoff_ua : 250000;
++
++	return 0;
++}
++
++static int sm5705_chg_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct power_supply_config psy_cfg = {};
++	struct sm5705_charger *chg;
++	int i, irq, ret;
++
++	chg = devm_kzalloc(dev, sizeof(*chg), GFP_KERNEL);
++	if (!chg)
++		return -ENOMEM;
++
++	chg->dev = dev;
++	platform_set_drvdata(pdev, chg);
++
++	ret = devm_mutex_init(dev, &chg->lock);
++	if (ret)
++		return ret;
++
++	chg->regmap = dev_get_regmap(dev->parent, NULL);
++	if (!chg->regmap)
++		return dev_err_probe(dev, -ENODEV, "no parent regmap\n");
++
++	chg->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
++	if (IS_ERR(chg->enable_gpio))
++		return dev_err_probe(dev, PTR_ERR(chg->enable_gpio),
++				     "cannot get enable gpio\n");
++
++	psy_cfg.fwnode = dev_fwnode(dev);
++	psy_cfg.drv_data = chg;
++
++	chg->psy = devm_power_supply_register(dev, &sm5705_chg_desc, &psy_cfg);
++	if (IS_ERR(chg->psy))
++		return dev_err_probe(dev, PTR_ERR(chg->psy),
++				     "failed to register power supply\n");
++
++	ret = sm5705_chg_parse_dt(chg);
++	if (ret)
++		return ret;
++
++	chg->edev = extcon_get_edev_by_phandle(dev, 0);
++	if (IS_ERR(chg->edev)) {
++		if (PTR_ERR(chg->edev) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(chg->edev),
++					     "cannot get extcon device\n");
++		chg->edev = NULL;
++	}
++
++	ret = sm5705_chg_hw_init(chg);
++	if (ret)
++		return dev_err_probe(dev, ret, "charger initialisation failed\n");
++
++	for (i = 0; i < pdev->num_resources; i++) {
++		irq = platform_get_irq(pdev, i);
++		if (irq < 0)
++			return irq;
++
++		ret = devm_request_threaded_irq(dev, irq, NULL, sm5705_chg_irq,
++						IRQF_ONESHOT, "sm5705-charger", chg);
++		if (ret)
++			return dev_err_probe(dev, ret, "cannot request irq %d\n", i);
++	}
++
++	if (chg->edev) {
++		chg->extcon_nb.notifier_call = sm5705_chg_extcon_notify;
++		ret = devm_extcon_register_notifier_all(dev, chg->edev,
++							&chg->extcon_nb);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "cannot register extcon notifier\n");
++	}
++
++	/* Pick up a cable that was attached before we probed */
++	sm5705_chg_update(chg);
++
++	return 0;
++}
++
++static void sm5705_chg_shutdown(struct platform_device *pdev)
++{
++	struct sm5705_charger *chg = platform_get_drvdata(pdev);
++
++	/* Fall back to the safe SDP limits; keep charging allowed. */
++	scoped_guard(mutex, &chg->lock) {
++		chg->edev = NULL;
++		sm5705_chg_apply_limits(chg);
++	}
++}
++
++static const struct of_device_id sm5705_chg_of_match[] = {
++	{ .compatible = "siliconmitus,sm5705-charger" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sm5705_chg_of_match);
++
++static const struct platform_device_id sm5705_chg_id[] = {
++	{ "sm5705-charger" },
++	{ }
++};
++MODULE_DEVICE_TABLE(platform, sm5705_chg_id);
++
++static struct platform_driver sm5705_chg_driver = {
++	.driver = {
++		.name = "sm5705-charger",
++		.of_match_table = sm5705_chg_of_match,
++	},
++	.probe = sm5705_chg_probe,
++	.shutdown = sm5705_chg_shutdown,
++	.id_table = sm5705_chg_id,
++};
++module_platform_driver(sm5705_chg_driver);
++
++MODULE_DESCRIPTION("Silicon Mitus SM5705 charger driver");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

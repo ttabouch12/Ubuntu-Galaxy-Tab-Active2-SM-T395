@@ -1,0 +1,99 @@
+From c954e26f5f590f232bc313173465c42e4ad3db26 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:12:57 +0300
+Subject: [PATCH 13/21] dt-bindings: clock: exynos7870: Add CMU_CPUCL0 and
+ CMU_CPUCL1
+
+Document the clock controllers of the two Cortex-A53 clusters and add
+their clock IDs. Also add the CMU_MIF switch clocks that feed the
+cluster switch muxes.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHXPfaxZf24zPigwQ9z
+---
+ .../clock/samsung,exynos7870-cmu.yaml         | 21 ++++++++++++++++
+ .../clock/samsung,exynos7870-cmu.h            | 24 ++++++++++++++++++-
+ 2 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/clock/samsung,exynos7870-cmu.yaml b/Documentation/devicetree/bindings/clock/samsung,exynos7870-cmu.yaml
+index 3c58712f1..a392ebd0d 100644
+--- a/Documentation/devicetree/bindings/clock/samsung,exynos7870-cmu.yaml
++++ b/Documentation/devicetree/bindings/clock/samsung,exynos7870-cmu.yaml
+@@ -25,6 +25,8 @@ properties:
+   compatible:
+     enum:
+       - samsung,exynos7870-cmu-mif
++      - samsung,exynos7870-cmu-cpucl0
++      - samsung,exynos7870-cmu-cpucl1
+       - samsung,exynos7870-cmu-dispaud
+       - samsung,exynos7870-cmu-fsys
+       - samsung,exynos7870-cmu-g3d
+@@ -109,6 +111,25 @@ allOf:
+             - const: bus
+             - const: usb20drd
+ 
++  - if:
++      properties:
++        compatible:
++          contains:
++            enum:
++              - samsung,exynos7870-cmu-cpucl0
++              - samsung,exynos7870-cmu-cpucl1
++    then:
++      properties:
++        clocks:
++          items:
++            - description: External reference clock (26 MHz)
++            - description: CPU cluster switch clock (from CMU_MIF)
++
++        clock-names:
++          items:
++            - const: oscclk
++            - const: switch
++
+   - if:
+       properties:
+         compatible:
+diff --git a/include/dt-bindings/clock/samsung,exynos7870-cmu.h b/include/dt-bindings/clock/samsung,exynos7870-cmu.h
+index 57d04bbe3..32ada963c 100644
+--- a/include/dt-bindings/clock/samsung,exynos7870-cmu.h
++++ b/include/dt-bindings/clock/samsung,exynos7870-cmu.h
+@@ -138,7 +138,11 @@
+ #define CLK_MOUT_MIF_CMU_PERI_UART0			126
+ #define CLK_MOUT_MIF_CMU_PERI_UART1			127
+ #define CLK_MOUT_MIF_CMU_PERI_UART2			128
+-#define MIF_NR_CLK					129
++#define CLK_DOUT_MIF_CMU_CPUCL0_SWITCH			129
++#define CLK_DOUT_MIF_CMU_CPUCL1_SWITCH			130
++#define CLK_GOUT_MIF_CMU_CPUCL0_SWITCH			131
++#define CLK_GOUT_MIF_CMU_CPUCL1_SWITCH			132
++#define MIF_NR_CLK					133
+ 
+ /* CMU_DISPAUD */
+ #define CLK_DOUT_DISPAUD_APB					1
+@@ -321,4 +325,22 @@
+ #define CLK_GOUT_PERI_WDT_CPUCL1_PCLK		47
+ #define PERI_NR_CLK				48
+ 
++/* CMU_CPUCL0 */
++#define CLK_FOUT_CPUCL0_PLL			1
++#define CLK_GOUT_CPUCL0_MUX_PLL		2
++#define CLK_GOUT_CPUCL0_MUX_PLL_CON		3
++#define CLK_GOUT_CPUCL0_MUX_SWITCH_USER	4
++#define CLK_MOUT_CPUCL0_SWITCH_USER		5
++#define CLK_CPUCL0_ARMCLK			6
++#define CPUCL0_NR_CLK			7
++
++/* CMU_CPUCL1 */
++#define CLK_FOUT_CPUCL1_PLL			1
++#define CLK_GOUT_CPUCL1_MUX_PLL		2
++#define CLK_GOUT_CPUCL1_MUX_PLL_CON		3
++#define CLK_GOUT_CPUCL1_MUX_SWITCH_USER	4
++#define CLK_MOUT_CPUCL1_SWITCH_USER		5
++#define CLK_CPUCL1_ARMCLK			6
++#define CPUCL1_NR_CLK			7
++
+ #endif /* _DT_BINDINGS_CLOCK_EXYNOS7870_H */
+-- 
+2.43.0
+

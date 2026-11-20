@@ -1,0 +1,44 @@
+From aa8e84fc13d2379e85d3aa4a9bfcd1694b2aba91 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:29:01 +0300
+Subject: [PATCH 02/21] dt-bindings: soc: samsung: add Exynos7870 sysreg and
+ PMU mipi-phy
+
+Allow the mipi-phy subnode in the Exynos7870 PMU and add the CAM0/DISP
+sysreg compatibles used by the Exynos7870 MIPI video PHY.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml   | 1 +
+ .../devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml  | 2 ++
+ 2 files changed, 3 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml b/Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml
+index f0fb24156..45acd6a03 100644
+--- a/Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml
++++ b/Documentation/devicetree/bindings/soc/samsung/exynos-pmu.yaml
+@@ -172,6 +172,7 @@ allOf:
+               - samsung,exynos5250-pmu
+               - samsung,exynos5420-pmu
+               - samsung,exynos5433-pmu
++              - samsung,exynos7870-pmu
+     then:
+       properties:
+         mipi-phy: true
+diff --git a/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml b/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
+index d8b302f97..dd88f40a0 100644
+--- a/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
++++ b/Documentation/devicetree/bindings/soc/samsung/samsung,exynos-sysreg.yaml
+@@ -26,6 +26,8 @@ properties:
+               - samsung,exynos3-sysreg
+               - samsung,exynos4-sysreg
+               - samsung,exynos5-sysreg
++              - samsung,exynos7870-cam0-sysreg
++              - samsung,exynos7870-disp-sysreg
+               - samsung,exynos8895-fsys0-sysreg
+               - samsung,exynos8895-fsys1-sysreg
+               - samsung,exynos8895-peric0-sysreg
+-- 
+2.43.0
+

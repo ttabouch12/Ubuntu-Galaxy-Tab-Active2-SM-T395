@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>gta2 panel</title>
+<link rel="icon" href="/logo.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form id="loginform" class="card logincard">
+    <img src="/logo.png" alt="" class="biglogo">
+    <h1 id="loginhost">gta2 panel</h1>
+    <p class="dim">Sign in with the tablet's <b>gta2</b> password</p>
+    <input id="pw" type="password" placeholder="Password" autocomplete="current-password" autofocus>
+    <button class="btn acc" type="submit">Sign in</button>
+    <p id="loginerr" class="err"></p>
+  </form>
+</div>
+<div id="app" class="hidden">
+  <nav id="nav">
+    <div class="brand"><img src="/logo.png" alt=""><span id="hostname">gta2</span></div>
+    <a data-page="home" class="active"><i>⌂</i><span>Home</span></a>
+    <a data-page="store"><i>▦</i><span>App store</span></a>
+    <a data-page="files"><i>▤</i><span>Files</span></a>
+    <a data-page="screen"><i>▣</i><span>Screen</span></a>
+    <a data-page="settings"><i>⚙</i><span>Settings</span></a>
+    <a id="logout" class="logout"><i>⎋</i><span>Sign out</span></a>
+  </nav>
+  <main>
+    <section id="p-home" class="page"></section>
+    <section id="p-store" class="page hidden"></section>
+    <section id="p-files" class="page hidden"></section>
+    <section id="p-screen" class="page hidden"></section>
+    <section id="p-settings" class="page hidden"></section>
+  </main>
+</div>
+<div id="toast" class="toast hidden"></div>
+<div id="modal" class="modal hidden"><div class="card modalcard"><h3 id="mtitle"></h3><div id="mbody"></div><div class="row end" id="mbtns"></div></div></div>
+<script src="/app.js"></script>
+</body>
+</html>

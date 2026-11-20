@@ -1,0 +1,8 @@
+[Unit]
+Description=gta2: test-kernel guard (reboot back to the good kernel unless confirmed within 8 min)
+ConditionPathExists=/userdata/extlinux/trial.booted
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'sleep 480; if [ -f /userdata/extlinux/trial.booted ]; then mv /userdata/extlinux/trial.booted /userdata/extlinux/trial.timeout; sync; systemctl reboot; fi'
+[Install]
+WantedBy=multi-user.target

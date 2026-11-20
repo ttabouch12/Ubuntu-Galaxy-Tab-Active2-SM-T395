@@ -1,0 +1,408 @@
+From 85f77320f5d8de612feec2e1e0db0ecff862c037 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:17:53 +0300
+Subject: [PATCH 10/21] mfd: sm5705: add Silicon Mitus SM5705 charger/flash
+ block core driver
+
+The SM5705 companion chip has a charger/flash/LED block at I2C address
+0x49 with one interrupt line shared by all its functions. Add a minimal
+MFD core that provides the regmap, a regmap-irq interrupt controller for
+the four INT/INTMSK register pairs and a charger cell. Only the charger
+is implemented so far.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHWjrzX28CzyNMEnVDk
+---
+ .../bindings/mfd/siliconmitus,sm5705.yaml     |  53 ++++++
+ drivers/mfd/Kconfig                           |  13 ++
+ drivers/mfd/Makefile                          |   1 +
+ drivers/mfd/sm5705.c                          | 175 ++++++++++++++++++
+ include/linux/mfd/sm5705.h                    |  98 ++++++++++
+ 5 files changed, 340 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml
+ create mode 100644 drivers/mfd/sm5705.c
+ create mode 100644 include/linux/mfd/sm5705.h
+
+diff --git a/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml b/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml
+new file mode 100644
+index 000000000..e80701e1b
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mfd/siliconmitus,sm5705.yaml
+@@ -0,0 +1,53 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/mfd/siliconmitus,sm5705.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Silicon Mitus SM5705 charger/flash block
++
++maintainers:
++  - Linux Exynos7870 maintainers <linux-samsung-soc@vger.kernel.org>
++
++description:
++  The SM5705 companion chip contains a charger, flash LED and RGB LED block
++  at I2C address 0x49 with a shared interrupt line. The micro-USB interface
++  controller (siliconmitus,sm5705-muic) and the fuel gauge
++  (siliconmitus,sm5705-fuelgauge) are separate I2C devices.
++
++properties:
++  compatible:
++    const: siliconmitus,sm5705
++
++  reg:
++    maxItems: 1
++    description: I2C slave address, 0x49.
++
++  interrupts:
++    maxItems: 1
++
++  wakeup-source: true
++
++required:
++  - compatible
++  - reg
++  - interrupts
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/interrupt-controller/irq.h>
++
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        pmic@49 {
++            compatible = "siliconmitus,sm5705";
++            reg = <0x49>;
++            interrupt-parent = <&gpa2>;
++            interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
++            wakeup-source;
++        };
++    };
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index 6cec18589..78ad1247a 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -1495,6 +1495,19 @@ config MFD_SM501_GPIO
+ 	  lines on the SM501. The platform data is used to supply the
+ 	  base number for the first GPIO line to register.
+ 
++config MFD_SM5705
++	tristate "Silicon Mitus SM5705 charger/flash block"
++	depends on I2C
++	select MFD_CORE
++	select REGMAP_I2C
++	select REGMAP_IRQ
++	help
++	  Say Y here to enable support for the charger/flash block (I2C
++	  address 0x49) of the Silicon Mitus SM5705 companion chip, found on
++	  some Samsung Exynos7870 devices. This is the core driver providing
++	  the register map and the shared interrupt; the charger function
++	  is enabled with CHARGER_SM5705.
++
+ config MFD_SKY81452
+ 	tristate "Skyworks Solutions SKY81452"
+ 	select MFD_CORE
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index 865e9f12f..54865c19e 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -10,6 +10,7 @@ obj-$(CONFIG_MFD_88PM805)	+= 88pm805.o 88pm80x.o
+ obj-$(CONFIG_MFD_88PM886_PMIC)	+= 88pm886.o
+ obj-$(CONFIG_MFD_ACT8945A)	+= act8945a.o
+ obj-$(CONFIG_MFD_SM501)		+= sm501.o
++obj-$(CONFIG_MFD_SM5705)	+= sm5705.o
+ obj-$(CONFIG_ARCH_BCM2835)	+= bcm2835-pm.o
+ obj-$(CONFIG_MFD_BCM590XX)	+= bcm590xx.o
+ obj-$(CONFIG_MFD_BD9571MWV)	+= bd9571mwv.o
+diff --git a/drivers/mfd/sm5705.c b/drivers/mfd/sm5705.c
+new file mode 100644
+index 000000000..01b218f3a
+--- /dev/null
++++ b/drivers/mfd/sm5705.c
+@@ -0,0 +1,175 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * MFD core driver for the charger/flash block of the Silicon Mitus SM5705
++ *
++ * The block lives at I2C address 0x49 and has a single interrupt line that is
++ * shared by its functions. This core provides the register map and the
++ * interrupt controller; only the charger cell is implemented so far.
++ *
++ * Reference: Samsung vendor kernel drivers/mfd/sm5705.c, sm5705-irq.c
++ */
++
++#include <linux/err.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/sm5705.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/pm_wakeirq.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++
++#define SM5705_IRQ(_irq, _reg, _bit) \
++	REGMAP_IRQ_REG(SM5705_IRQ_##_irq, _reg, BIT(_bit))
++
++static const struct regmap_irq sm5705_irqs[] = {
++	SM5705_IRQ(VBUSPOK, 0, 0),
++	SM5705_IRQ(VBUSUVLO, 0, 1),
++	SM5705_IRQ(VBUSOVP, 0, 2),
++	SM5705_IRQ(VBUSLIMIT, 0, 3),
++	SM5705_IRQ(WPCINPOK, 0, 4),
++	SM5705_IRQ(WPCINUVLO, 0, 5),
++	SM5705_IRQ(WPCINOVP, 0, 6),
++	SM5705_IRQ(WPCINLIMIT, 0, 7),
++
++	SM5705_IRQ(AICL, 1, 0),
++	SM5705_IRQ(BATOVP, 1, 1),
++	SM5705_IRQ(NOBAT, 1, 2),
++	SM5705_IRQ(CHGON, 1, 3),
++	SM5705_IRQ(Q4FULLON, 1, 4),
++	SM5705_IRQ(TOPOFF, 1, 5),
++	SM5705_IRQ(DONE, 1, 6),
++	SM5705_IRQ(WDTMROFF, 1, 7),
++
++	SM5705_IRQ(THEMREG, 2, 0),
++	SM5705_IRQ(THEMSHDN, 2, 1),
++	SM5705_IRQ(OTGFAIL, 2, 2),
++	SM5705_IRQ(DISLIMIT, 2, 3),
++	SM5705_IRQ(PRETMROFF, 2, 4),
++	SM5705_IRQ(FASTTMROFF, 2, 5),
++	SM5705_IRQ(LOWBATT, 2, 6),
++	SM5705_IRQ(NENQ4, 2, 7),
++
++	SM5705_IRQ(FLED1SHORT, 3, 0),
++	SM5705_IRQ(FLED1OPEN, 3, 1),
++	SM5705_IRQ(FLED2SHORT, 3, 2),
++	SM5705_IRQ(FLED2OPEN, 3, 3),
++	SM5705_IRQ(BOOSTPOK_NG, 3, 4),
++	SM5705_IRQ(BOOSTPOK, 3, 5),
++	SM5705_IRQ(ABSTMR1OFF, 3, 6),
++	SM5705_IRQ(SBPS, 3, 7),
++};
++
++static const struct regmap_irq_chip sm5705_irq_chip = {
++	.name		= "sm5705",
++	.status_base	= SM5705_REG_INT1,
++	.mask_base	= SM5705_REG_INTMSK1,
++	.num_regs	= 4,
++	.irqs		= sm5705_irqs,
++	.num_irqs	= ARRAY_SIZE(sm5705_irqs),
++};
++
++static bool sm5705_volatile_reg(struct device *dev, unsigned int reg)
++{
++	return reg >= SM5705_REG_INT1 && reg <= SM5705_REG_STATUS4;
++}
++
++static const struct regmap_config sm5705_regmap_config = {
++	.reg_bits	= 8,
++	.val_bits	= 8,
++	.max_register	= SM5705_REG_MAX,
++	.volatile_reg	= sm5705_volatile_reg,
++	.cache_type	= REGCACHE_NONE,
++};
++
++static const struct resource sm5705_charger_resources[] = {
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_VBUSPOK, "vbuspok"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_VBUSUVLO, "vbusuvlo"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_VBUSOVP, "vbusovp"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_BATOVP, "batovp"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_NOBAT, "nobat"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_TOPOFF, "topoff"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_DONE, "done"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_THEMREG, "themreg"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_THEMSHDN, "themshdn"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_PRETMROFF, "pretmroff"),
++	DEFINE_RES_IRQ_NAMED(SM5705_IRQ_FASTTMROFF, "fasttmroff"),
++};
++
++static const struct mfd_cell sm5705_cells[] = {
++	{
++		.name		= "sm5705-charger",
++		.of_compatible	= "siliconmitus,sm5705-charger",
++		.resources	= sm5705_charger_resources,
++		.num_resources	= ARRAY_SIZE(sm5705_charger_resources),
++	},
++};
++
++static int sm5705_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct regmap_irq_chip_data *irq_data;
++	struct regmap *regmap;
++	unsigned int reg;
++	int ret;
++
++	if (!client->irq)
++		return dev_err_probe(dev, -EINVAL, "no interrupt specified\n");
++
++	regmap = devm_regmap_init_i2c(client, &sm5705_regmap_config);
++	if (IS_ERR(regmap))
++		return dev_err_probe(dev, PTR_ERR(regmap), "failed to init regmap\n");
++
++	/* Mask every source; regmap-irq unmasks those that are requested. */
++	for (reg = SM5705_REG_INTMSK1; reg <= SM5705_REG_INTMSK4; reg++) {
++		ret = regmap_write(regmap, reg, 0xff);
++		if (ret)
++			return dev_err_probe(dev, ret, "cannot mask interrupts\n");
++	}
++
++	ret = devm_regmap_add_irq_chip(dev, regmap, client->irq,
++				       IRQF_ONESHOT, 0, &sm5705_irq_chip,
++				       &irq_data);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to add irq chip\n");
++
++	if (device_property_read_bool(dev, "wakeup-source")) {
++		ret = devm_device_init_wakeup(dev);
++		if (ret)
++			return ret;
++		ret = devm_pm_set_wake_irq(dev, client->irq);
++		if (ret)
++			return ret;
++	}
++
++	return devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO, sm5705_cells,
++				    ARRAY_SIZE(sm5705_cells), NULL, 0,
++				    regmap_irq_get_domain(irq_data));
++}
++
++static const struct of_device_id sm5705_of_match[] = {
++	{ .compatible = "siliconmitus,sm5705" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sm5705_of_match);
++
++static const struct i2c_device_id sm5705_id[] = {
++	{ "sm5705" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, sm5705_id);
++
++static struct i2c_driver sm5705_driver = {
++	.driver = {
++		.name = "sm5705",
++		.of_match_table = sm5705_of_match,
++	},
++	.probe = sm5705_probe,
++	.id_table = sm5705_id,
++};
++module_i2c_driver(sm5705_driver);
++
++MODULE_DESCRIPTION("Silicon Mitus SM5705 charger/flash block MFD core");
++MODULE_LICENSE("GPL");
+diff --git a/include/linux/mfd/sm5705.h b/include/linux/mfd/sm5705.h
+new file mode 100644
+index 000000000..64b64fd1f
+--- /dev/null
++++ b/include/linux/mfd/sm5705.h
+@@ -0,0 +1,98 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Silicon Mitus SM5705 companion chip, charger/flash/LED block (I2C 0x49)
++ *
++ * Reference: Samsung vendor kernel include/linux/mfd/sm5705.h
++ */
++
++#ifndef __LINUX_MFD_SM5705_H
++#define __LINUX_MFD_SM5705_H
++
++#include <linux/bits.h>
++
++/* Registers of the I2C device at 0x49 used by the charger */
++#define SM5705_REG_INT1			0x00
++#define SM5705_REG_INT2			0x01
++#define SM5705_REG_INT3			0x02
++#define SM5705_REG_INT4			0x03
++#define SM5705_REG_INTMSK1		0x04
++#define SM5705_REG_INTMSK2		0x05
++#define SM5705_REG_INTMSK3		0x06
++#define SM5705_REG_INTMSK4		0x07
++#define SM5705_REG_STATUS1		0x08
++#define SM5705_REG_STATUS2		0x09
++#define SM5705_REG_STATUS3		0x0a
++#define SM5705_REG_STATUS4		0x0b
++#define SM5705_REG_CNTL			0x0c
++#define SM5705_REG_VBUSCNTL		0x0d
++#define SM5705_REG_WPCINCNTL		0x0e
++#define SM5705_REG_CHGCNTL1		0x0f
++#define SM5705_REG_CHGCNTL2		0x10
++#define SM5705_REG_CHGCNTL3		0x11
++#define SM5705_REG_CHGCNTL4		0x12
++#define SM5705_REG_CHGCNTL5		0x13
++#define SM5705_REG_CHGCNTL6		0x14
++#define SM5705_REG_CHGCNTL7		0x15
++#define SM5705_REG_CHGCNTL8		0x16
++#define SM5705_REG_DEVICEID		0x37
++#define SM5705_REG_MAX			0x3e
++
++/* STATUS1 */
++#define SM5705_STATUS1_VBUSPOK		BIT(0)
++#define SM5705_STATUS1_VBUSUVLO		BIT(1)
++#define SM5705_STATUS1_VBUSOVP		BIT(2)
++#define SM5705_STATUS1_VBUSLIMIT	BIT(3)
++/* STATUS2 */
++#define SM5705_STATUS2_BATOVP		BIT(1)
++#define SM5705_STATUS2_NOBAT		BIT(2)
++#define SM5705_STATUS2_CHGON		BIT(3)
++#define SM5705_STATUS2_TOPOFF		BIT(5)
++#define SM5705_STATUS2_DONE		BIT(6)
++/* STATUS3 */
++#define SM5705_STATUS3_THEMREG		BIT(0)
++#define SM5705_STATUS3_THEMSHDN		BIT(1)
++#define SM5705_STATUS3_PRETMROFF	BIT(4)
++#define SM5705_STATUS3_FASTTMROFF	BIT(5)
++
++/* Interrupt sources, in the order of the INT1..INT4 registers */
++enum sm5705_irq {
++	SM5705_IRQ_VBUSPOK,
++	SM5705_IRQ_VBUSUVLO,
++	SM5705_IRQ_VBUSOVP,
++	SM5705_IRQ_VBUSLIMIT,
++	SM5705_IRQ_WPCINPOK,
++	SM5705_IRQ_WPCINUVLO,
++	SM5705_IRQ_WPCINOVP,
++	SM5705_IRQ_WPCINLIMIT,
++
++	SM5705_IRQ_AICL,
++	SM5705_IRQ_BATOVP,
++	SM5705_IRQ_NOBAT,
++	SM5705_IRQ_CHGON,
++	SM5705_IRQ_Q4FULLON,
++	SM5705_IRQ_TOPOFF,
++	SM5705_IRQ_DONE,
++	SM5705_IRQ_WDTMROFF,
++
++	SM5705_IRQ_THEMREG,
++	SM5705_IRQ_THEMSHDN,
++	SM5705_IRQ_OTGFAIL,
++	SM5705_IRQ_DISLIMIT,
++	SM5705_IRQ_PRETMROFF,
++	SM5705_IRQ_FASTTMROFF,
++	SM5705_IRQ_LOWBATT,
++	SM5705_IRQ_NENQ4,
++
++	SM5705_IRQ_FLED1SHORT,
++	SM5705_IRQ_FLED1OPEN,
++	SM5705_IRQ_FLED2SHORT,
++	SM5705_IRQ_FLED2OPEN,
++	SM5705_IRQ_BOOSTPOK_NG,
++	SM5705_IRQ_BOOSTPOK,
++	SM5705_IRQ_ABSTMR1OFF,
++	SM5705_IRQ_SBPS,
++
++	SM5705_NUM_IRQS,
++};
++
++#endif /* __LINUX_MFD_SM5705_H */
+-- 
+2.43.0
+

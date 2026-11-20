@@ -1,0 +1,106 @@
+#!/bin/sh
+# gta2-ctl: root helper for the Settings app (run with sudo -n). Every action prints one short result line.
+#   gta2-ctl <area> <action> [args]
+set -u
+A=${1:-}; B=${2:-}; C=${3:-}; D=${4:-}
+CPU=/sys/devices/system/cpu
+ok() { echo "$*"; exit 0; }
+die() { echo "error: $*"; exit 1; }
+case "$A" in
+time)
+  case "$B" in
+    status) echo "tz=$(timedatectl show -p Timezone --value 2>/dev/null) ntp=$(timedatectl show -p NTP --value 2>/dev/null) now=$(date '+%Y-%m-%d %H:%M')" ;;
+    tz) timedatectl set-timezone "$C" && ok "timezone $C" ;;
+    ntp) timedatectl set-ntp "$C" && ok "network time $C" ;;
+    zones) timedatectl list-timezones ;;
+  esac ;;
+device)
+  case "$B" in
+    hostname) echo "$C" | grep -Eq '^[A-Za-z0-9-]{1,40}$' || die "letters, digits and - only"
+              hostnamectl set-hostname "$C" 2>/dev/null || echo "$C" > /etc/hostname
+              sed -i "s/^127.0.1.1.*/127.0.1.1 $C/" /etc/hosts; ok "device name $C (restart to apply everywhere)" ;;
+    passwd) [ ${#C} -ge 4 ] || die "at least 4 characters"; printf 'gta2:%s\n' "$C" | chpasswd && ok "login password changed" ;;
+  esac ;;
+update)
+  case "$B" in
+    check) apt-get update -qq >/dev/null 2>&1; n=$(apt list --upgradable 2>/dev/null | grep -c upgradable); ok "$n updates available" ;;
+    run) DEBIAN_FRONTEND=noninteractive apt-get -y -qq upgrade >/tmp/gta2-upgrade.log 2>&1 && ok "system updated" || die "see /tmp/gta2-upgrade.log" ;;
+    clean) apt-get clean; journalctl --vacuum-size=8M >/dev/null 2>&1; rm -rf /var/tmp/* /tmp/gta2-* 2>/dev/null
+           docker image prune -f >/dev/null 2>&1; ok "cleaned: $(df -h / | awk 'NR==2{print $4}') free on system, $(df -h /userdata | awk 'NR==2{print $4}') on data" ;;
+  esac ;;
+cpu)
+  case "$B" in
+    status) echo "gov=$(cat $CPU/cpu0/cpufreq/scaling_governor 2>/dev/null || echo none) max=$(cat $CPU/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo 0) top=$(cat $CPU/cpu4/cpufreq/cpuinfo_max_freq $CPU/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -rn | head -1) boost=$(cat $CPU/cpufreq/boost 2>/dev/null || echo n/a) trip=$(cat /etc/gta2/throttle 2>/dev/null || echo 90) cap=$(cat /etc/gta2/maxfreq 2>/dev/null || echo 1794000)" ;;
+    gov) for p in $CPU/cpu[0-7]/cpufreq/scaling_governor; do echo "$C" > $p 2>/dev/null; done; ok "governor $C" ;;
+    max) mkdir -p /etc/gta2; echo "$C" > /etc/gta2/maxfreq; systemctl restart gta2-thermal 2>/dev/null; ok "max $((C/1000)) MHz" ;;
+    boost) [ -w $CPU/cpufreq/boost ] && echo "$C" > $CPU/cpufreq/boost; ok "boost $C" ;;
+    trip) mkdir -p /etc/gta2; echo "$C" > /etc/gta2/throttle; systemctl restart gta2-thermal 2>/dev/null; ok "throttle at $C C" ;;
+  esac ;;
+screen)
+  case "$B" in
+    rotation) case "$C" in portrait) R=UD;; portrait-flip) R=normal;; landscape) R=CW;; landscape-flip) R=CCW;; *) die "unknown rotation";; esac
+              mkdir -p /etc/gta2; echo "$C" > /etc/gta2/rotation
+              sed -i "s/^\( *Option \"Rotate\" \).*/\1\"$R\"/" /etc/X11/xorg.conf.d/10-gta2.conf
+              (sleep 1; systemctl restart gta2-gui) >/dev/null 2>&1 &
+              ok "rotation $C" ;;
+    restart-ui) systemctl restart gta2-gui; ok "interface restarted" ;;
+  esac ;;
+bt)
+  command -v bluetoothctl >/dev/null || die "Bluetooth tools not installed (apt install bluez)"
+  case "$B" in
+    status) bluetoothctl show 2>/dev/null | grep -E "Powered|Name" | tr -s ' \t' ' '; echo; bluetoothctl devices Paired 2>/dev/null ;;
+    power) systemctl start bluetooth; bluetoothctl power "$C" >/dev/null && ok "Bluetooth $C" ;;
+    scan) systemctl start bluetooth; timeout 12 bluetoothctl --timeout 10 scan on >/dev/null 2>&1; bluetoothctl devices ;;
+    pair) bluetoothctl pair "$C" >/dev/null 2>&1; bluetoothctl trust "$C" >/dev/null 2>&1; bluetoothctl connect "$C" >/dev/null 2>&1 && ok "connected $C" || die "pairing failed" ;;
+    remove) bluetoothctl remove "$C" >/dev/null && ok "removed $C" ;;
+  esac ;;
+battery)
+  case "$B" in
+    limit) mkdir -p /etc/gta2; echo "$C" > /etc/gta2/charge_limit; systemctl enable gta2-charge >/dev/null 2>&1; systemctl restart gta2-charge 2>/dev/null
+           [ "$C" -ge 100 ] && ok "charge limit off (charges to 100%)"; ok "charging stops at $C%, resumes at $((C-5))%" ;;
+    status) M=$(/usr/local/sbin/gta2-charge method 2>/dev/null); L=$(cat /etc/gta2/charge_limit 2>/dev/null || echo 100)
+            [ -n "$M" ] || ok "this kernel has no charge switch: limit not available"
+            ok "limit ${L}%  ·  switch: $M  ·  $(systemctl is-active gta2-charge)" ;;
+  esac ;;
+docker)
+  case "$B" in
+    list) docker ps -a --format '{{.Names}}|{{.State}}|{{.Status}}|{{.Image}}' ;;
+    start|stop|restart) docker "$B" "$C" >/dev/null && ok "$C ${B}ed" ;;
+    autostart) docker update --restart="$( [ "$D" = on ] && echo unless-stopped || echo no)" "$C" >/dev/null && ok "$C autostart $D" ;;
+    prune) docker system prune -f >/dev/null 2>&1; ok "removed stopped containers and unused images" ;;
+    service) systemctl "$C" docker >/dev/null 2>&1; ok "Docker $C" ;;
+  esac ;;
+ssh)
+  F=/etc/ssh/sshd_config.d/gta2.conf
+  case "$B" in
+    status) echo "ssh=$(systemctl is-active ssh) password=$(grep -qi '^PasswordAuthentication yes' $F && echo on || echo off) keys=$(grep -c . /home/gta2/.ssh/authorized_keys 2>/dev/null || echo 0)" ;;
+    on|off) [ "$B" = on ] && systemctl enable --now ssh >/dev/null 2>&1 || systemctl disable --now ssh >/dev/null 2>&1; ok "SSH $B" ;;
+    password) sed -i "s/^PasswordAuthentication.*/PasswordAuthentication $( [ "$C" = on ] && echo yes || echo no)/" $F; systemctl reload ssh; ok "password login $C" ;;
+    addkey) K=/userdata/gta2srv/share/authorized_keys.txt; [ -f "$K" ] || die "put the key in the share as authorized_keys.txt"
+            mkdir -p /home/gta2/.ssh; cat "$K" >> /home/gta2/.ssh/authorized_keys; chown -R gta2:gta2 /home/gta2/.ssh; chmod 600 /home/gta2/.ssh/authorized_keys
+            mv "$K" "$K.added"; ok "key added" ;;
+  esac ;;
+vpn)
+  case "$B" in
+    status) echo "wireguard=$(ip link show wg0 >/dev/null 2>&1 && echo up || echo down) tailscale=$(command -v tailscale >/dev/null && tailscale status --peers=false 2>/dev/null | head -1 || echo not-installed)" ;;
+    wg-up) W=/userdata/gta2srv/share/wg0.conf; [ -f /etc/wireguard/wg0.conf ] || { [ -f $W ] || die "put wg0.conf in the share"; mkdir -p /etc/wireguard; cp $W /etc/wireguard/wg0.conf; chmod 600 /etc/wireguard/wg0.conf; }
+           command -v wg-quick >/dev/null || die "install wireguard-tools first"; systemctl enable --now wg-quick@wg0 >/dev/null 2>&1 && ok "WireGuard up" || die "wg-quick failed" ;;
+    wg-down) systemctl disable --now wg-quick@wg0 >/dev/null 2>&1; ok "WireGuard down" ;;
+    ts-install) curl -fsSL https://tailscale.com/install.sh | sh >/tmp/gta2-ts.log 2>&1 && ok "Tailscale installed" || die "see /tmp/gta2-ts.log" ;;
+    ts-up) tailscale up --timeout 20s >/tmp/gta2-ts.log 2>&1; grep -o 'https://login.tailscale.com/[^ ]*' /tmp/gta2-ts.log | head -1 || ok "Tailscale up" ;;
+    ts-down) tailscale down; ok "Tailscale down" ;;
+    wg-install) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq wireguard-tools >/dev/null 2>&1 && ok "WireGuard tools installed" ;;
+  esac ;;
+hotspot)
+  case "$B" in
+    on) [ ${#D} -ge 8 ] || die "password: at least 8 characters"
+        nmcli dev wifi hotspot ifname wlan0 con-name gta2-hotspot ssid "$C" password "$D" >/dev/null 2>&1 && ok "hotspot $C on (Wi-Fi client is off meanwhile)" || die "this Wi-Fi chip/driver refused AP mode" ;;
+    off) nmcli con down gta2-hotspot >/dev/null 2>&1; ok "hotspot off" ;;
+    tether-on) sysctl -qw net.ipv4.ip_forward=1; for i in usb0 rndis0; do ip link show $i >/dev/null 2>&1 && U=$i; done
+               iptables -t nat -C POSTROUTING -o wlan0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE
+               touch /run/gta2-tether; ok "USB tether on: the laptop gets internet through the tablet's Wi-Fi" ;;
+    tether-off) iptables -t nat -D POSTROUTING -o wlan0 -j MASQUERADE 2>/dev/null; rm -f /run/gta2-tether; ok "USB tether off" ;;
+    status) echo "hotspot=$(nmcli -t -f NAME con show --active | grep -q gta2-hotspot && echo on || echo off) tether=$([ -f /run/gta2-tether ] && echo on || echo off)" ;;
+  esac ;;
+*) echo "usage: gta2-ctl time|device|update|cpu|screen|bt|battery|docker|ssh|vpn|hotspot ..."; exit 1 ;;
+esac

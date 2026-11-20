@@ -1,0 +1,833 @@
+#!/usr/bin/python3
+# gta2-panel: LAN web panel for the tablet (status, apps, app store, files, remote screen, settings).
+# Socket-activated by systemd on :80 (gta2-panel.socket, Accept=no); exits after 10 min idle -> 0 MB when unused.
+# Stdlib only. Runs as root; every command is an argv list (never a shell).
+#   test: GTA2_PANEL_TEST=1 GTA2_PANEL_TEST_PASSWORD=x GTA2_PANEL_PORT=8099 GTA2_PANEL_DIR=./panel gta2-panel
+import os, sys, re, json, time, socket, threading, secrets, subprocess, shutil, mmap, zlib, struct, pwd, glob, ctypes, hmac
+import urllib.parse
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+TEST = os.environ.get('GTA2_PANEL_TEST') == '1'
+DIR = os.environ.get('GTA2_PANEL_DIR', '/usr/share/gta2/panel')
+LOGO = os.environ.get('GTA2_PANEL_LOGO', '/usr/share/gta2/gta2-logo.png')
+RUN = os.environ.get('GTA2_PANEL_RUN', '/run/gta2-panel')
+CTL, SHARE_TOOL, REBOOT = '/usr/local/sbin/gta2-ctl', '/usr/local/sbin/gta2-share', '/usr/local/sbin/gta2-reboot'
+APPS_ROOT = '/userdata/gta2srv/apps'
+ROOTS = {'share': os.environ.get('GTA2_PANEL_SHARE', '/userdata/gta2srv/share'), 'sdcard': '/media/sdcard'}
+FB = os.environ.get('GTA2_PANEL_FB', '/dev/fb0')
+USER = 'gta2'
+IDLE = int(os.environ.get('GTA2_PANEL_IDLE', '600'))
+SESSION_DAYS = 7
+state = {'last': time.time(), 'cpu': None, 'jobs': {}}
+lock = threading.Lock()
+
+NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+MAC_RE = re.compile(r'^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$')
+ZONE_RE = re.compile(r'^[A-Za-z0-9_+/-]{1,64}$')
+HOST_RE = re.compile(r'^[A-Za-z0-9-]{1,40}$')
+
+
+def touch():
+    state['last'] = time.time()
+
+
+def run(argv, t=60, inp=None):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=t, input=inp)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except FileNotFoundError:
+        return 127, '%s: not installed' % argv[0]
+    except subprocess.TimeoutExpired:
+        return 124, 'timed out'
+
+
+def rd(p, d=''):
+    try:
+        with open(p) as f:
+            return f.read().strip()
+    except OSError:
+        return d
+
+
+# ---------------- auth
+def _crypt(pw, salt):
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            import crypt
+        return crypt.crypt(pw, salt)
+    except ImportError:
+        lib = ctypes.CDLL('libcrypt.so.1')
+        lib.crypt.restype = ctypes.c_char_p
+        lib.crypt.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        r = lib.crypt(pw.encode(), salt.encode())
+        return r.decode() if r else None
+
+
+def check_password(pw):
+    if TEST:
+        return hmac.compare_digest(pw, os.environ.get('GTA2_PANEL_TEST_PASSWORD', ''))
+    for l in open('/etc/shadow'):
+        f = l.split(':')
+        if f[0] == USER:
+            h = f[1]
+            if not h or h[0] in '!*':
+                return False
+            c = _crypt(pw, h)
+            return bool(c) and hmac.compare_digest(c, h)
+    return False
+
+
+def _sess_file():
+    return os.path.join(RUN, 'sessions.json')
+
+
+def sessions():
+    try:
+        s = json.load(open(_sess_file()))
+    except Exception:
+        s = {}
+    now = time.time()
+    return {k: v for k, v in s.items() if v > now}
+
+
+def save_sessions(s):
+    os.makedirs(RUN, mode=0o700, exist_ok=True)
+    tmp = _sess_file() + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(s, f)
+    os.replace(tmp, _sess_file())
+
+
+fails = {}  # ip -> [timestamps]
+
+
+# ---------------- stats
+def cpu_pct():
+    def sample():
+        a = list(map(int, open('/proc/stat').readline().split()[1:]))
+        return a[3] + a[4], sum(a)
+    cur = sample()
+    prev = state['cpu']
+    if prev is None:
+        time.sleep(0.25)
+        prev, cur = cur, sample()
+    state['cpu'] = cur
+    return round(100 * (1 - (cur[0] - prev[0]) / max(1, cur[1] - prev[1])), 1)
+
+
+def stats():
+    m = {}
+    for l in open('/proc/meminfo'):
+        k, v = l.split(':', 1)
+        m[k] = int(v.split()[0]) // 1024
+    temps = []
+    for z in sorted(glob.glob('/sys/class/thermal/thermal_zone*')):
+        ty = rd(z + '/type')
+        if re.search('fuel|batt|charger', ty, re.I):
+            continue
+        t = rd(z + '/temp')
+        if t.lstrip('-').isdigit():
+            temps.append({'name': ty, 'c': round(int(t) / 1000, 1)})
+    bat = {}
+    for n in glob.glob('/sys/class/power_supply/*'):
+        ty = rd(n + '/type')
+        if ty == 'Battery' or 'fuel' in n or n.endswith('/battery'):
+            for k in ('capacity', 'status', 'voltage_now', 'current_now', 'temp', 'health'):
+                v = rd(n + '/' + k)
+                if v and k not in bat:
+                    bat[k] = v
+        if rd(n + '/online', '0') == '1' and ty in ('Mains', 'USB', 'USB_PD', 'Wireless'):
+            bat['source'] = ty
+    mhz = []
+    for i in range(16):
+        f = rd('/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq' % i)
+        if f.isdigit():
+            mhz.append(int(f) // 1000)
+    disks = []
+    for p in ('/', '/userdata', '/media/sdcard'):
+        if p == '/media/sdcard' and not os.path.ismount(p):
+            continue
+        try:
+            st = os.statvfs(p)
+            disks.append({'path': p, 'total': st.f_blocks * st.f_frsize, 'free': st.f_bavail * st.f_frsize})
+        except OSError:
+            pass
+    rc, ips = run(['ip', '-4', '-o', 'addr'], 5)
+    iplist = []
+    for l in ips.splitlines():
+        f = l.split()
+        if len(f) > 3 and f[1] != 'lo' and not re.match(r'(docker|veth|br-)', f[1]):
+            iplist.append({'if': f[1], 'ip': f[3].split('/')[0]})
+    return {'host': socket.gethostname(), 'time': time.strftime('%H:%M'), 'date': time.strftime('%A %d %B'),
+            'uptime': int(float(rd('/proc/uptime', '0').split()[0])), 'load': rd('/proc/loadavg').split()[:3],
+            'cpu': cpu_pct(), 'cores': os.cpu_count(), 'mhz': mhz,
+            'mem': {'total': m.get('MemTotal', 0), 'avail': m.get('MemAvailable', 0)},
+            'temps': temps, 'battery': bat, 'disks': disks, 'ips': iplist, 'kernel': os.uname().release}
+
+
+# ---------------- docker
+def containers():
+    rc, out = run(['docker', 'ps', '-a', '--format', '{{json .}}'], 15)
+    if rc:
+        return {'ok': False, 'error': out[-200:], 'items': []}
+    items = []
+    for l in out.splitlines():
+        try:
+            c = json.loads(l)
+        except ValueError:
+            continue
+        labels = dict(x.split('=', 1) for x in c.get('Labels', '').split(',') if '=' in x)
+        ports = sorted({int(h) for h, _ in re.findall(r'(?:0\.0\.0\.0|\[::\]|::):(\d+)->(\d+)/tcp', c.get('Ports', ''))})
+        if not ports and labels.get('gta2.port', '').isdigit():
+            ports = [int(labels['gta2.port'])]
+        items.append({'name': c['Names'], 'image': c['Image'], 'state': c['State'], 'status': c['Status'],
+                      'ports': ports, 'app': labels.get('gta2.app', ''), 'web': labels.get('gta2.web', ''),
+                      'path': labels.get('gta2.path', '')})
+    return {'ok': True, 'items': items}
+
+
+def store_list():
+    apps = json.load(open(os.path.join(DIR, 'apps.json')))
+    names = {c['name']: c for c in containers()['items']}
+    m = stats()['mem']
+    for a in apps:
+        c = names.get(a['id'])
+        a['installed'] = bool(c)
+        a['state'] = c['state'] if c else ''
+    return {'apps': apps, 'mem_avail': m['avail'], 'mem_total': m['total']}
+
+
+def app_template(aid):
+    for a in json.load(open(os.path.join(DIR, 'apps.json'))):
+        if a['id'] == aid:
+            return a
+    return None
+
+
+def _job(key, fn):
+    def w():
+        try:
+            state['jobs'][key] = {'state': 'running', 'log': ''}
+            ok, log = fn()
+            state['jobs'][key] = {'state': 'done' if ok else 'failed', 'log': log[-2000:]}
+        except Exception as e:
+            state['jobs'][key] = {'state': 'failed', 'log': str(e)}
+        touch()
+    threading.Thread(target=w, daemon=True).start()
+
+
+def install_app(a):
+    base = os.path.join(APPS_ROOT, a['id'])
+    sub = lambda s: s.replace('{app}', base).replace('{share}', ROOTS['share'])
+    uid = _uid()
+    argv = ['docker', 'run', '-d', '--name', a['id'], '--restart', 'unless-stopped',
+            '--label', 'gta2.app=' + a['id'], '--label', 'gta2.web=' + a.get('scheme', 'http')]
+    if a.get('web_port'):
+        argv += ['--label', 'gta2.port=%d' % a['web_port']]
+    if a.get('web_path'):
+        argv += ['--label', 'gta2.path=' + a['web_path']]
+    if a.get('mem'):
+        argv += ['--memory', a['mem']]
+    if a.get('network') == 'host':
+        argv += ['--network', 'host']
+    for p in a.get('ports', []):
+        argv += ['-p', p]
+    for v in a.get('volumes', []):
+        v = sub(v)
+        host = v.split(':')[0]
+        if host.startswith('/') and not host.startswith('/var/run/') and not os.path.exists(host):
+            os.makedirs(host, exist_ok=True)
+            if host.startswith(ROOTS['share']) and uid:
+                os.chown(host, *uid)
+        argv += ['-v', v]
+    for e in a.get('env', []):
+        argv += ['-e', sub(e).replace('{tz}', rd('/etc/timezone', 'UTC')).replace('{uid}', str(uid[0] if uid else 1000))
+                 .replace('{gid}', str(uid[1] if uid else 1000))]
+    argv += a.get('args', []) + [a['image']] + a.get('cmd', [])
+    if a.get('chown') and re.match(r'^\d+:\d+$', a['chown']) and os.path.isdir(base):
+        cu, cg = map(int, a['chown'].split(':'))
+        for dp, dn, fn in os.walk(base):
+            for x in [dp] + [os.path.join(dp, y) for y in fn]:
+                os.chown(x, cu, cg)
+    rc, out = run(['docker', 'pull', a['image']], 1800)
+    if rc:
+        return False, 'pull failed: ' + out
+    rc, out2 = run(argv, 120)
+    return rc == 0, out[-500:] + '\n' + out2
+
+
+def uninstall_app(a, delete):
+    rc, out = run(['docker', 'rm', '-f', a['id']], 60)
+    run(['docker', 'rmi', a['image']], 120)
+    if delete:
+        d = os.path.realpath(os.path.join(APPS_ROOT, a['id']))
+        if d.startswith(APPS_ROOT + '/') and os.path.isdir(d):
+            shutil.rmtree(d)
+            out += '\ndata deleted'
+    return True, out
+
+
+# ---------------- files
+def _uid():
+    try:
+        p = pwd.getpwnam(USER)
+        return p.pw_uid, p.pw_gid
+    except KeyError:
+        return None
+
+
+def resolve(path):
+    """'share/a/b' -> absolute path inside an allowed root, else None"""
+    path = (path or 'share').strip('/')
+    root, _, rest = path.partition('/')
+    if root not in ROOTS:
+        return None, None
+    base = os.path.realpath(ROOTS[root])
+    full = os.path.realpath(os.path.join(base, rest))
+    if full != base and not full.startswith(base + '/'):
+        return None, None
+    return full, base
+
+
+def list_dir(path):
+    full, base = resolve(path)
+    if not full or not os.path.isdir(full):
+        return {'error': 'not a folder'}
+    items = []
+    with os.scandir(full) as it:
+        for e in it:
+            try:
+                st = e.stat()
+            except OSError:
+                continue
+            items.append({'name': e.name, 'dir': e.is_dir(), 'size': st.st_size, 'mtime': int(st.st_mtime)})
+    items.sort(key=lambda x: (not x['dir'], x['name'].lower()))
+    roots = [{'key': k, 'mounted': os.path.isdir(v) and (k == 'share' or os.path.ismount(v))} for k, v in ROOTS.items()]
+    return {'path': path.strip('/') or 'share', 'items': items, 'roots': roots}
+
+
+def safe_name(n):
+    return bool(n) and n not in ('.', '..') and '/' not in n and '\0' not in n and len(n) < 256
+
+
+# ---------------- screen
+def fb_info():
+    try:
+        w, h = map(int, rd('/sys/class/graphics/fb0/virtual_size', '800,1280').split(','))
+        stride = int(rd('/sys/class/graphics/fb0/stride', str(w * 4)))
+    except ValueError:
+        w, h, stride = 800, 1280, 3200
+    return w, h, stride
+
+
+def screen_image(q=70):
+    w, h, stride = fb_info()
+    rot = rd('/etc/gta2/rotation', 'portrait') or 'portrait'
+    fd = os.open(FB, os.O_RDONLY)
+    try:
+        mm = mmap.mmap(fd, stride * h, mmap.MAP_SHARED, mmap.PROT_READ)
+        data = mm[:]
+        mm.close()
+    finally:
+        os.close(fd)
+    try:
+        from PIL import Image
+        im = Image.frombuffer('RGB', (w, h), data, 'raw', 'BGRX', stride, 1)
+        op = {'portrait': Image.Transpose.ROTATE_180, 'landscape': Image.Transpose.ROTATE_90,
+              'landscape-flip': Image.Transpose.ROTATE_270}.get(rot)
+        if op is not None:
+            im = im.transpose(op)
+        import io
+        b = io.BytesIO()
+        im.save(b, 'JPEG', quality=q)
+        return 'image/jpeg', b.getvalue(), im.size
+    except ImportError:  # half-resolution PNG, portrait only
+        W, H = w // 2, h // 2
+        rows = []
+        for y in range(H):
+            r = data[(h - 1 - 2 * y) * stride:(h - 2 * y) * stride]
+            px = bytearray(W * 3)
+            seg = r[0:w * 4:8][::-1]
+            px[0::3] = r[2:w * 4:8][::-1]
+            px[1::3] = r[1:w * 4:8][::-1]
+            px[2::3] = seg
+            rows.append(b'\0' + bytes(px))
+        c = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+        png = b'\x89PNG\r\n\x1a\n' + c(b'IHDR', struct.pack('>IIBBBBB', W, H, 8, 2, 0, 0, 0)) + \
+            c(b'IDAT', zlib.compress(b''.join(rows), 3)) + c(b'IEND', b'')
+        return 'image/png', png, (w, h)
+
+
+def xdo(*args, t=10):
+    return run(['runuser', '-u', USER, '--', 'env', 'DISPLAY=:0', 'HOME=/home/' + USER,
+                'XAUTHORITY=/home/%s/.Xauthority' % USER, 'xdotool'] + list(args), t)
+
+
+def as_user_bg(argv):
+    subprocess.Popen(['runuser', '-u', USER, '--', 'env', 'DISPLAY=:0', 'HOME=/home/' + USER] + argv,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+# ---------------- settings
+CFGDIR = '/home/%s/.config/gta2' % USER
+PREF_KEYS = {'enabled': bool, 'after': int, 'mode': str, 'image': str, 'interval': int, 'clock': bool, 'off_after': int, 'screen_off': int}
+
+
+def write_user_file(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(text)
+    u = _uid()
+    if u:
+        os.chown(path, *u)
+        os.chown(os.path.dirname(path), *u)
+
+
+def prefs():
+    c = {'enabled': False, 'after': 5, 'mode': 'image', 'image': '', 'interval': 15, 'clock': True, 'off_after': 0, 'screen_off': 0}
+    try:
+        c.update(json.load(open(CFGDIR + '/screensaver.json')))
+    except Exception:
+        pass
+    return {'screensaver': c, 'osk_size': rd(CFGDIR + '/osk_size', 'M') or 'M'}
+
+
+def backlight():
+    b = (glob.glob('/sys/class/backlight/*') or [''])[0]
+    return b, int(rd(b + '/max_brightness', '255') or 255), int(rd(b + '/brightness', '0') or 0)
+
+
+V_ON = lambda x: x in ('on', 'off')
+V_INT = lambda lo, hi: (lambda x: str(x).isdigit() and lo <= int(x) <= hi)
+V_STR = lambda n: (lambda x: isinstance(x, str) and 0 < len(x) <= n and not re.search(r'[\x00-\x1f]', x))
+CTL_ALLOW = {
+    'time': {'status': [], 'tz': [ZONE_RE.match], 'ntp': [lambda x: x in ('true', 'false')], 'zones': []},
+    'device': {'hostname': [HOST_RE.match], 'passwd': [V_STR(128)]},
+    'update': {'check': [], 'run': [], 'clean': []},
+    'cpu': {'status': [], 'gov': [re.compile(r'^[a-z]{3,20}$').match], 'max': [V_INT(100000, 4000000)], 'trip': [V_INT(50, 105)]},
+    'screen': {'rotation': [lambda x: x in ('portrait', 'portrait-flip', 'landscape', 'landscape-flip')]},
+    'bt': {'status': [], 'power': [V_ON], 'scan': [], 'pair': [MAC_RE.match], 'remove': [MAC_RE.match]},
+    'battery': {'status': [], 'limit': [V_INT(50, 100)]},
+    'docker': {'list': [], 'start': [NAME_RE.match], 'stop': [NAME_RE.match], 'restart': [NAME_RE.match],
+               'autostart': [NAME_RE.match, V_ON], 'prune': [], 'service': [lambda x: x in ('start', 'stop')]},
+    'ssh': {'status': [], 'on': [], 'off': [], 'password': [V_ON], 'addkey': []},
+    'vpn': {a: [] for a in ('status', 'ts-install', 'ts-up', 'ts-down', 'wg-install', 'wg-up', 'wg-down')},
+    'hotspot': {'status': [], 'on': [V_STR(32), V_STR(63)], 'off': [], 'tether-on': [], 'tether-off': []},
+}
+SLOW = {('update', 'run'): 1800, ('update', 'check'): 300, ('vpn', 'ts-install'): 600, ('vpn', 'wg-install'): 300,
+        ('bt', 'scan'): 30, ('docker', 'prune'): 300}
+
+
+def ctl(area, action, args):
+    spec = CTL_ALLOW.get(area, {}).get(action)
+    args = [str(a) for a in (args or [])]
+    if spec is None or len(args) != len(spec) or not all(v(a) for v, a in zip(spec, args)):
+        return 400, 'invalid request'
+    rc, out = run([CTL, area, action] + args, SLOW.get((area, action), 90))
+    if rc and not out.startswith('error'):
+        out = 'error: ' + (out or 'failed')
+    return 200, out
+
+
+def wifi_list(rescan):
+    if rescan:
+        run(['nmcli', 'dev', 'wifi', 'rescan'], 20)
+    rc, out = run(['nmcli', '-t', '-f', 'IN-USE,SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list'], 20)
+    nets, seen = [], set()
+    for l in out.splitlines():
+        p = [x.replace('\0', ':') for x in l.replace('\\:', '\0').split(':')]
+        if len(p) < 4 or not p[1] or p[1] in seen:
+            continue
+        seen.add(p[1])
+        nets.append({'active': p[0] == '*', 'ssid': p[1], 'signal': int(p[2] or 0), 'secure': p[3] not in ('', '--')})
+    nets.sort(key=lambda n: (-n['active'], -n['signal']))
+    rc, radio = run(['nmcli', 'radio', 'wifi'], 10)
+    return {'nets': nets, 'radio': radio.strip() == 'enabled'}
+
+
+# ---------------- HTTP
+STATIC = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'application/javascript; charset=utf-8'),
+          '/app.css': ('app.css', 'text/css; charset=utf-8')}
+
+
+class H(BaseHTTPRequestHandler):
+    server_version = 'gta2-panel'
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, fmt, *a):
+        if TEST:
+            sys.stderr.write('%s %s\n' % (self.address_string(), fmt % a))
+
+    def ip(self):
+        return self.client_address[0]
+
+    def send(self, code, body, ctype='application/json', headers=None):
+        if not isinstance(body, (bytes, bytearray)):
+            body = json.dumps(body).encode() if ctype == 'application/json' else str(body).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(body)
+
+    def token(self):
+        for part in self.headers.get('Cookie', '').split(';'):
+            k, _, v = part.strip().partition('=')
+            if k == 'gta2s':
+                return v
+        return None
+
+    def authed(self):
+        t = self.token()
+        return bool(t) and t in sessions()
+
+    def body(self, limit=65536):
+        n = int(self.headers.get('Content-Length') or 0)
+        if n > limit:
+            raise ValueError('too large')
+        raw = self.rfile.read(n) if n else b'{}'
+        return json.loads(raw or b'{}')
+
+    def qs(self):
+        return {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).items()}
+
+    # ---- GET
+    def do_GET(self):
+        touch()
+        path = urllib.parse.urlparse(self.path).path
+        if path in STATIC:
+            f, ct = STATIC[path]
+            try:
+                return self.send(200, open(os.path.join(DIR, f), 'rb').read(), ct)
+            except OSError:
+                return self.send(404, b'missing', 'text/plain')
+        if path == '/logo.png':
+            try:
+                return self.send(200, open(LOGO, 'rb').read(), 'image/png', {'Cache-Control': 'max-age=86400'})
+            except OSError:
+                return self.send(404, b'', 'text/plain')
+        if path == '/api/me':
+            return self.send(200, {'auth': self.authed(), 'host': socket.gethostname()})
+        if not path.startswith('/api/'):
+            return self.send(404, b'not found', 'text/plain')
+        if not self.authed():
+            return self.send(401, {'error': 'login required'})
+        q = self.qs()
+        try:
+            if path == '/api/stats':
+                return self.send(200, stats())
+            if path == '/api/containers':
+                return self.send(200, containers())
+            if path == '/api/logs':
+                if not NAME_RE.match(q.get('name', '')):
+                    return self.send(400, {'error': 'bad name'})
+                rc, out = run(['docker', 'logs', '--tail', '200', q['name']], 20)
+                return self.send(200, {'log': out})
+            if path == '/api/store':
+                return self.send(200, store_list())
+            if path == '/api/jobs':
+                return self.send(200, state['jobs'])
+            if path == '/api/files':
+                return self.send(200, list_dir(q.get('path', 'share')))
+            if path == '/api/download':
+                return self.download(q.get('path', ''))
+            if path == '/api/screen':
+                ct, data, size = screen_image(int(q.get('q', '70')) if q.get('q', '').isdigit() else 70)
+                return self.send(200, data, ct, {'X-Root-Size': '%dx%d' % size})
+            if path == '/api/wifi':
+                return self.send(200, wifi_list(q.get('rescan') == '1'))
+            if path == '/api/display':
+                b, mx, cur = backlight()
+                return self.send(200, {'max': mx, 'brightness': cur, 'rotation': rd('/etc/gta2/rotation', 'portrait') or 'portrait',
+                                       **prefs(), 'images': sorted(os.path.basename(p) for p in glob.glob(ROOTS['share'] + '/Screensaver/*')
+                                                                   if p.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')))})
+            if path == '/api/share':
+                rc, out = run([SHARE_TOOL, 'status'], 20)
+                return self.send(200, dict(l.split('=', 1) for l in out.splitlines() if '=' in l))
+        except Exception as e:
+            return self.send(500, {'error': str(e)[:300]})
+        return self.send(404, {'error': 'unknown'})
+
+    do_HEAD = do_GET
+
+    def download(self, p):
+        full, _ = resolve(p)
+        if not full or not os.path.isfile(full):
+            return self.send(404, {'error': 'not found'})
+        size = os.path.getsize(full)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(size))
+        self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(os.path.basename(full)))
+        self.end_headers()
+        with open(full, 'rb') as f:
+            while True:
+                b = f.read(262144)
+                if not b:
+                    break
+                self.wfile.write(b)
+                touch()
+
+    # ---- POST
+    def do_POST(self):
+        touch()
+        path = urllib.parse.urlparse(self.path).path
+        if self.headers.get('X-Gta2') != '1':
+            return self.send(403, {'error': 'missing X-Gta2 header'})
+        if path == '/api/login':
+            return self.login()
+        if not self.authed():
+            return self.send(401, {'error': 'login required'})
+        try:
+            if path == '/api/upload':
+                return self.upload()
+            d = self.body()
+            return self.post(path, d)
+        except (ValueError, KeyError, TypeError) as e:
+            return self.send(400, {'error': str(e)[:200]})
+        except Exception as e:
+            return self.send(500, {'error': str(e)[:300]})
+
+    def login(self):
+        ip = self.ip()
+        now = time.time()
+        f = [t for t in fails.get(ip, []) if now - t < 300]
+        fails[ip] = f
+        if len(f) >= 5:
+            return self.send(429, {'error': 'too many attempts, wait a few minutes'})
+        try:
+            pw = str(self.body().get('password', ''))
+        except ValueError:
+            return self.send(400, {'error': 'bad request'})
+        time.sleep(0.4)
+        if not check_password(pw):
+            f.append(now)
+            return self.send(401, {'error': 'wrong password'})
+        fails.pop(ip, None)
+        with lock:
+            s = sessions()
+            t = secrets.token_urlsafe(32)
+            s[t] = now + SESSION_DAYS * 86400
+            save_sessions(s)
+        return self.send(200, {'ok': True}, headers={
+            'Set-Cookie': 'gta2s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict' % (t, SESSION_DAYS * 86400)})
+
+    def upload(self):
+        q = self.qs()
+        full, _ = resolve(q.get('path', 'share'))
+        name = q.get('name', '')
+        if not full or not os.path.isdir(full) or not safe_name(name):
+            return self.send(400, {'error': 'bad target'})
+        n = int(self.headers.get('Content-Length') or 0)
+        dst = os.path.join(full, name)
+        tmp = dst + '.part'
+        u = _uid()
+        with open(tmp, 'wb') as f:
+            left = n
+            while left > 0:
+                b = self.rfile.read(min(1048576, left))
+                if not b:
+                    break
+                f.write(b)
+                left -= len(b)
+                touch()
+        if left:
+            os.remove(tmp)
+            return self.send(400, {'error': 'upload interrupted'})
+        os.replace(tmp, dst)
+        if u:
+            os.chown(dst, *u)
+        return self.send(200, {'ok': True, 'msg': 'uploaded ' + name})
+
+    def post(self, path, d):
+        if path == '/api/logout':
+            with lock:
+                s = sessions()
+                s.pop(self.token(), None)
+                save_sessions(s)
+            return self.send(200, {'ok': True}, headers={'Set-Cookie': 'gta2s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'})
+        if path == '/api/docker':
+            a, n = d.get('action'), d.get('name', '')
+            if a not in ('start', 'stop', 'restart') or not NAME_RE.match(n):
+                return self.send(400, {'error': 'bad request'})
+            rc, out = run(['docker', a, n], 90)
+            return self.send(200, {'ok': rc == 0, 'msg': (n + ' ' + {'start': 'started', 'stop': 'stopped', 'restart': 'restarted'}[a]) if rc == 0 else out})
+        if path in ('/api/store/install', '/api/store/uninstall'):
+            a = app_template(str(d.get('id', '')))
+            if not a:
+                return self.send(404, {'error': 'unknown app'})
+            key = a['id']
+            if state['jobs'].get(key, {}).get('state') == 'running':
+                return self.send(409, {'error': 'already working on ' + key})
+            if path.endswith('install') and not path.endswith('uninstall'):
+                _job(key, lambda: install_app(a))
+                return self.send(200, {'ok': True, 'msg': 'installing %s (download can take a few minutes)' % a['name']})
+            _job(key, lambda: uninstall_app(a, bool(d.get('delete'))))
+            return self.send(200, {'ok': True, 'msg': 'removing ' + a['name']})
+        if path == '/api/files/op':
+            return self.files_op(d)
+        if path == '/api/input':
+            return self.input(d)
+        if path == '/api/ctl':
+            code, out = ctl(str(d.get('area', '')), str(d.get('action', '')), d.get('args', []))
+            return self.send(code, {'ok': code == 200 and not out.startswith('error'), 'msg': out})
+        if path == '/api/wifi':
+            op = d.get('op')
+            ssid = d.get('ssid', '')
+            if op == 'connect' and V_STR(32)(ssid):
+                argv = ['nmcli', 'dev', 'wifi', 'connect', ssid]
+                if d.get('password'):
+                    if not V_STR(63)(d['password']):
+                        return self.send(400, {'error': 'bad password'})
+                    argv += ['password', d['password']]
+                rc, out = run(argv, 60)
+                return self.send(200, {'ok': rc == 0, 'msg': out.splitlines()[-1] if out else ''})
+            if op == 'forget' and V_STR(32)(ssid):
+                rc, out = run(['nmcli', 'con', 'delete', ssid], 20)
+                return self.send(200, {'ok': rc == 0, 'msg': out})
+            if op == 'radio' and V_ON(d.get('state')):
+                rc, out = run(['nmcli', 'radio', 'wifi', d['state']], 20)
+                return self.send(200, {'ok': rc == 0, 'msg': 'Wi-Fi ' + d['state']})
+            return self.send(400, {'error': 'bad request'})
+        if path == '/api/share':
+            a, v = d.get('action'), d.get('value', '')
+            if a in ('smb', 'guest') and V_ON(v):
+                argv = [SHARE_TOOL, a, v]
+            elif a == 'passwd' and V_STR(128)(v) and len(v) >= 4:
+                argv = [SHARE_TOOL, 'passwd', v]
+            else:
+                return self.send(400, {'error': 'bad request'})
+            rc, out = run(argv, 30)
+            return self.send(200, {'ok': rc == 0, 'msg': out or 'done'})
+        if path == '/api/brightness':
+            b, mx, _ = backlight()
+            v = int(d.get('value', 0))
+            if not b or not 1 <= v <= mx:
+                return self.send(400, {'error': 'bad value'})
+            with open(b + '/brightness', 'w') as f:
+                f.write(str(v))
+            return self.send(200, {'ok': True})
+        if path == '/api/prefs':
+            p = prefs()
+            if 'screensaver' in d:
+                ss = p['screensaver']
+                for k, v in d['screensaver'].items():
+                    if k in PREF_KEYS:
+                        ss[k] = PREF_KEYS[k](v)
+                if ss['mode'] not in ('image', 'slideshow', 'clock'):
+                    return self.send(400, {'error': 'bad mode'})
+                if ss.get('image') and '/' not in ss['image']:
+                    ss['image'] = ROOTS['share'] + '/Screensaver/' + ss['image']
+                write_user_file(CFGDIR + '/screensaver.json', json.dumps(ss))
+            if d.get('osk_size') in ('S', 'M', 'L'):
+                write_user_file(CFGDIR + '/osk_size', d['osk_size'])
+            if d.get('preview'):
+                write_user_file(CFGDIR + '/screensaver_now', '1')
+            return self.send(200, {'ok': True, 'msg': 'saved'})
+        if path == '/api/power':
+            m = d.get('mode')
+            if m not in ('system', 'poweroff', 'recovery', 'download'):
+                return self.send(400, {'error': 'bad mode'})
+            subprocess.Popen([REBOOT, m], start_new_session=True)
+            return self.send(200, {'ok': True, 'msg': {'system': 'rebooting', 'poweroff': 'shutting down'}.get(m, 'rebooting to ' + m)})
+        return self.send(404, {'error': 'unknown'})
+
+    def files_op(self, d):
+        op = d.get('op')
+        full, base = resolve(d.get('path', ''))
+        if not full:
+            return self.send(400, {'error': 'bad path'})
+        u = _uid()
+        if op == 'mkdir':
+            if not safe_name(d.get('name')):
+                return self.send(400, {'error': 'bad name'})
+            t = os.path.join(full, d['name'])
+            os.mkdir(t)
+            if u:
+                os.chown(t, *u)
+            return self.send(200, {'ok': True, 'msg': 'folder created'})
+        if full == base:
+            return self.send(400, {'error': 'cannot change the root folder'})
+        if op == 'rename':
+            if not safe_name(d.get('to')):
+                return self.send(400, {'error': 'bad name'})
+            os.rename(full, os.path.join(os.path.dirname(full), d['to']))
+            return self.send(200, {'ok': True, 'msg': 'renamed'})
+        if op == 'delete':
+            if os.path.isdir(full) and not os.path.islink(full):
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+            return self.send(200, {'ok': True, 'msg': 'deleted'})
+        return self.send(400, {'error': 'bad op'})
+
+    def input(self, d):
+        t = d.get('type')
+        if t == 'tap':
+            x, y = int(d['x']), int(d['y'])
+            if not (0 <= x < 4096 and 0 <= y < 4096):
+                return self.send(400, {'error': 'bad coords'})
+            rc, out = xdo('mousemove', str(x), str(y), 'click', '1')
+            xdo('mouseup', '1')
+            return self.send(200, {'ok': rc == 0, 'msg': out})
+        if t == 'key':
+            k = d.get('key')
+            if k == 'home':
+                rc, out = xdo('search', '--classname', '^gta2-launcher$', 'windowactivate')
+            elif k == 'back':
+                rc, out = xdo('key', 'Escape')
+            elif k in ('Return', 'BackSpace', 'Tab', 'Up', 'Down', 'Left', 'Right'):
+                rc, out = xdo('key', k)
+            elif k == 'keyboard':
+                rc, out = run(['pkill', '-x', 'matchbox-keyboa'], 5)
+                if rc:
+                    as_user_bg(['matchbox-keyboard'])
+                rc = 0
+            else:
+                return self.send(400, {'error': 'bad key'})
+            return self.send(200, {'ok': rc == 0})
+        if t == 'text':
+            s = str(d.get('text', ''))
+            if not 0 < len(s) <= 500 or '\0' in s:
+                return self.send(400, {'error': 'bad text'})
+            rc, out = xdo('type', '--delay', '20', '--', s, t=30)
+            return self.send(200, {'ok': rc == 0})
+        return self.send(400, {'error': 'bad input'})
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
+
+
+def main():
+    if os.environ.get('LISTEN_FDS') == '1' and os.environ.get('LISTEN_PID') == str(os.getpid()):
+        sock = socket.socket(fileno=3)
+        srv = Server(sock.getsockname()[:2], H, bind_and_activate=False)
+        srv.socket.close()
+        srv.socket = sock
+    else:
+        srv = Server(('', int(os.environ.get('GTA2_PANEL_PORT', '80'))), H)
+
+    def idle():
+        while True:
+            time.sleep(20)
+            busy = any(j.get('state') == 'running' for j in state['jobs'].values())
+            if not busy and time.time() - state['last'] > IDLE:
+                srv.shutdown()
+                return
+    threading.Thread(target=idle, daemon=True).start()
+    srv.serve_forever(poll_interval=1)
+
+
+if __name__ == '__main__':
+    main()

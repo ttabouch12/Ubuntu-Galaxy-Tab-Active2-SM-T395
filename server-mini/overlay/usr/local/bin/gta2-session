@@ -1,9 +1,19 @@
 #!/bin/sh
 # gta2srv X session: matchbox (one fullscreen app at a time) + launcher (also handles the hardware keys)
 xset s off -dpms 2>/dev/null
-xsetroot -solid '#0d1117' 2>/dev/null
+xsetroot -solid '#0f1115' 2>/dev/null
 matchbox-window-manager -use_titlebar no -use_cursor no &
 sleep 1; sudo -n python3 /usr/local/sbin/gta2-fbinit.py --wake
 xdotool mouseup 1 2>/dev/null  # never start with a stuck synthetic button (blocks touch)
+# touch follows the screen rotation (Settings > Display). Portrait = Xorg "Rotate UD" = identity.
+case "$(cat /etc/gta2/rotation 2>/dev/null)" in
+  portrait-flip) M="-1 0 1 0 -1 1 0 0 1" ;;
+  landscape) M="0 -1 1 1 0 0 0 0 1" ;;
+  landscape-flip) M="0 1 0 -1 0 1 0 0 1" ;;
+  *) M="1 0 0 0 1 0 0 0 1" ;;
+esac
+xinput list --name-only 2>/dev/null | grep -iE 'touch|pen' | while read -r d; do
+  xinput set-prop "$d" "Coordinate Transformation Matrix" $M 2>/dev/null
+done
 [ -f ~/.config/gta2/kiosk_autostart ] && gta2-kiosk &
 while true; do python3 /usr/local/bin/gta2-launcher; sleep 1; done

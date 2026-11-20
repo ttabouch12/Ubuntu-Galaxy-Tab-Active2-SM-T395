@@ -18,16 +18,31 @@ make exynos-mobile_defconfig >/dev/null || exit 1
   --set-str DEFAULT_DEVICE_TREE "exynos/exynos7870-gtactive2lte" --set-str DEVICE_TREE "exynos/exynos7870-gtactive2lte" \
   -e USE_BOOTCOMMAND --set-str BOOTCOMMAND "run gta2_boot" --set-val BOOTDELAY 1 -e USE_PREBOOT --set-str PREBOOT "" \
   -e ENV_VARS_UBOOT_CONFIG
-grep -q gta2_boot include/env/*.env 2>/dev/null
-cat >> board/samsung/exynos-mobile/exynos-mobile.env 2>/dev/null <<'E'
-gta2_rec=echo gta2: -> TWRP; mw.l 0x1048080c 0x12345674; sleep 1; reset
+E=board/samsung/exynos-mobile/exynos-mobile.env
+git checkout -q -- $E
+# drop the upstream boot flow (EFI bootmgr + pause + menu, blkmap preboot) and its menu entries
+sed -i -e '/^bootcmd=/d' -e '/^bootdelay=/d' -e '/^preboot=/d' -e '/^bootmenu_[0-9]=/d' $E
+cat >> $E <<'EOF'
+bootdelay=2
+bootcmd=run gta2_boot
+kernel_addr_r=0x50000000
+fdt_addr_r=0x4c000000
+ramdisk_addr_r=0x60000000
+scriptaddr=0x4b000000
+pxefile_addr_r=0x4b000000
+fdtfile=exynos7870-gtactive2lte.dtb
+fdt_high=0xffffffffffffffff
+initrd_high=0xffffffffffffffff
+gta2_rec=echo gta2: -> TWRP in 15 s (Volume Down = menu); sleep 15; mw.l 0x1048080c 0x12345674; reset
 gta2_dl=echo gta2: -> download mode; mw.l 0x1048080c 0x12345671; sleep 1; reset
-gta2_boot=if sysboot mmc 0:18 any ${scriptaddr} /extlinux/extlinux.conf; then; fi; echo gta2: extlinux boot failed; run gta2_rec
+gta2_diag=mmc dev 0; mmc info; part list mmc 0; ls mmc 0:18 /extlinux; ls mmc 0:18 /gta2srv/ml
+gta2_boot=echo gta2: booting extlinux from mmc 0:18; run gta2_diag; sysboot mmc 0:18 any ${scriptaddr} /extlinux/extlinux.conf; echo gta2: extlinux boot FAILED; run gta2_rec
 bootmenu_0=Ubuntu Server Mini (mainline)=run gta2_boot
-bootmenu_1=TWRP recovery=run gta2_rec
+bootmenu_1=TWRP recovery=mw.l 0x1048080c 0x12345674; reset
 bootmenu_2=Download mode=run gta2_dl
 bootmenu_3=U-Boot console=echo
-E
+EOF
+grep -n "^bootcmd\|^gta2_boot\|^kernel_addr" $E
 ls board/samsung/exynos-mobile/
 make olddefconfig >/dev/null; grep -E "BOOTCOMMAND|DEVICE_TREE=|CMD_I2C=|CMD_SYSBOOT=" .config
 make -j$(nproc) 2>&1 | grep -E "error|Error|warning: .*gtactive" | head -20

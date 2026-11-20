@@ -1,0 +1,326 @@
+From 3bb5c85af01d8dbd9a5f1151a542b8b08705f0db Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:14:18 +0300
+Subject: [PATCH 15/21] arm64: dts: exynos7870: Add CPU frequency scaling
+
+Add the CMU_CPUCL0/1 clock controllers, hook the CPU cores up to their
+cluster clock and describe one OPP table per cluster, as consumed by
+cpufreq-dt. Frequencies and voltages come from the vendor cpufreq DVFS
+table (cl0_dvfs_table/cl1_dvfs_table in exynos7870.dtsi of the Samsung
+kernel); the highest voltage per frequency is used.
+
+The stock maximum is 1586 MHz. The 1690 and 1794 MHz OPPs that the vendor
+kernel can also run are marked turbo-mode, so they are only used once boost
+is enabled. The first CPU of each cluster is made a cooling device for
+later thermal zone use.
+
+Boards must provide cpu-supply for the CPUs.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHXPfaxZf24zPigwQ9z
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 232 +++++++++++++++++++++
+ 1 file changed, 232 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index 5b1b0b67b..892f636d9 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -68,6 +68,9 @@ cpu0: cpu@0 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x0>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl0 CLK_CPUCL0_ARMCLK>;
++			operating-points-v2 = <&cluster0_opp_table>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu1: cpu@1 {
+@@ -75,6 +78,8 @@ cpu1: cpu@1 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x1>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl0 CLK_CPUCL0_ARMCLK>;
++			operating-points-v2 = <&cluster0_opp_table>;
+ 		};
+ 
+ 		cpu2: cpu@2 {
+@@ -82,6 +87,8 @@ cpu2: cpu@2 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x2>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl0 CLK_CPUCL0_ARMCLK>;
++			operating-points-v2 = <&cluster0_opp_table>;
+ 		};
+ 
+ 		cpu3: cpu@3 {
+@@ -89,6 +96,8 @@ cpu3: cpu@3 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x3>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl0 CLK_CPUCL0_ARMCLK>;
++			operating-points-v2 = <&cluster0_opp_table>;
+ 		};
+ 
+ 		cpu4: cpu@100 {
+@@ -96,6 +105,9 @@ cpu4: cpu@100 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x100>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl1 CLK_CPUCL1_ARMCLK>;
++			operating-points-v2 = <&cluster1_opp_table>;
++			#cooling-cells = <2>;
+ 		};
+ 
+ 		cpu5: cpu@101 {
+@@ -103,6 +115,8 @@ cpu5: cpu@101 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x101>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl1 CLK_CPUCL1_ARMCLK>;
++			operating-points-v2 = <&cluster1_opp_table>;
+ 		};
+ 
+ 		cpu6: cpu@102 {
+@@ -110,6 +124,8 @@ cpu6: cpu@102 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x102>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl1 CLK_CPUCL1_ARMCLK>;
++			operating-points-v2 = <&cluster1_opp_table>;
+ 		};
+ 
+ 		cpu7: cpu@103 {
+@@ -117,6 +133,202 @@ cpu7: cpu@103 {
+ 			compatible = "arm,cortex-a53";
+ 			reg = <0x103>;
+ 			enable-method = "psci";
++			clocks = <&cmu_cpucl1 CLK_CPUCL1_ARMCLK>;
++			operating-points-v2 = <&cluster1_opp_table>;
++		};
++	};
++
++	cluster0_opp_table: opp-table-cluster0 {
++		compatible = "operating-points-v2";
++		opp-shared;
++
++		opp-1794000000 {
++			opp-hz = /bits/ 64 <1794000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++			turbo-mode;
++		};
++
++		opp-1690000000 {
++			opp-hz = /bits/ 64 <1690000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++			turbo-mode;
++		};
++
++		opp-1586000000 {
++			opp-hz = /bits/ 64 <1586000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1482000000 {
++			opp-hz = /bits/ 64 <1482000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1352000000 {
++			opp-hz = /bits/ 64 <1352000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1248000000 {
++			opp-hz = /bits/ 64 <1248000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1144000000 {
++			opp-hz = /bits/ 64 <1144000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1014000000 {
++			opp-hz = /bits/ 64 <1014000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-902000000 {
++			opp-hz = /bits/ 64 <902000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-839000000 {
++			opp-hz = /bits/ 64 <839000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-757000000 {
++			opp-hz = /bits/ 64 <757000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-676000000 {
++			opp-hz = /bits/ 64 <676000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-546000000 {
++			opp-hz = /bits/ 64 <546000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-449000000 {
++			opp-hz = /bits/ 64 <449000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-343000000 {
++			opp-hz = /bits/ 64 <343000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++	};
++
++	cluster1_opp_table: opp-table-cluster1 {
++		compatible = "operating-points-v2";
++		opp-shared;
++
++		opp-1794000000 {
++			opp-hz = /bits/ 64 <1794000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++			turbo-mode;
++		};
++
++		opp-1690000000 {
++			opp-hz = /bits/ 64 <1690000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++			turbo-mode;
++		};
++
++		opp-1586000000 {
++			opp-hz = /bits/ 64 <1586000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1482000000 {
++			opp-hz = /bits/ 64 <1482000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1352000000 {
++			opp-hz = /bits/ 64 <1352000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1248000000 {
++			opp-hz = /bits/ 64 <1248000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1144000000 {
++			opp-hz = /bits/ 64 <1144000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-1014000000 {
++			opp-hz = /bits/ 64 <1014000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-902000000 {
++			opp-hz = /bits/ 64 <902000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-839000000 {
++			opp-hz = /bits/ 64 <839000000>;
++			opp-microvolt = <900000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-757000000 {
++			opp-hz = /bits/ 64 <757000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-676000000 {
++			opp-hz = /bits/ 64 <676000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-546000000 {
++			opp-hz = /bits/ 64 <546000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-449000000 {
++			opp-hz = /bits/ 64 <449000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
++		};
++
++		opp-343000000 {
++			opp-hz = /bits/ 64 <343000000>;
++			opp-microvolt = <800000>;
++			clock-latency-ns = <100000>;
+ 		};
+ 	};
+ 
+@@ -186,6 +398,26 @@ cmu_mif: clock-controller@10460000 {
+ 			clocks = <&oscclk>;
+ 		};
+ 
++		cmu_cpucl0: clock-controller@10900000 {
++			compatible = "samsung,exynos7870-cmu-cpucl0";
++			reg = <0x10900000 0x1000>;
++			#clock-cells = <1>;
++
++			clock-names = "oscclk", "switch";
++			clocks = <&oscclk>,
++				 <&cmu_mif CLK_GOUT_MIF_CMU_CPUCL0_SWITCH>;
++		};
++
++		cmu_cpucl1: clock-controller@10800000 {
++			compatible = "samsung,exynos7870-cmu-cpucl1";
++			reg = <0x10800000 0x1000>;
++			#clock-cells = <1>;
++
++			clock-names = "oscclk", "switch";
++			clocks = <&oscclk>,
++				 <&cmu_mif CLK_GOUT_MIF_CMU_CPUCL1_SWITCH>;
++		};
++
+ 		pmu_system_controller: system-controller@10480000 {
+ 			compatible = "samsung,exynos7870-pmu",
+ 				     "samsung,exynos7-pmu", "syscon";
+-- 
+2.43.0
+

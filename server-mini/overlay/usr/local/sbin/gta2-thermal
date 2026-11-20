@@ -11,7 +11,7 @@
 # On 3.18 the vendor TMU passive trips below TRIP are raised to TRIP so the
 # kernel does not throttle earlier than we do. Critical/hot trips are never touched.
 
-TRIP=${TRIP:-90000}
+TRIP=${TRIP:-$(( $(cat /etc/gta2/throttle 2>/dev/null || echo 90) * 1000 ))}
 HYST=${HYST:-5000}
 BATT_TRIP=${BATT_TRIP:-55000}
 FLOOR=${FLOOR:-1014000}
@@ -20,8 +20,7 @@ C=/sys/devices/system/cpu
 
 log() { echo "gta2-thermal: $*"; }
 
-# boost on (mainline cpufreq-dt); harmless if absent
-[ -w $C/cpufreq/boost ] && echo 1 > $C/cpufreq/boost 2>/dev/null
+# boost (1690/1794 MHz) on mainline only when a CPU temperature sensor exists (see below)
 # 3.18: Samsung hotplug off so all cores stay online
 for f in /sys/power/cpuhotplug/enabled $C/cpuhotplug/enabled; do
 	[ -w $f ] && echo 0 > $f 2>/dev/null
@@ -35,10 +34,10 @@ for p in $C/cpufreq/policy*; do [ -d "$p" ] && POLS="$POLS $p"; done
 
 # frequency ladder (high -> low), including boost OPPs
 first=$(echo $POLS | cut -d' ' -f1)
-LADDER=$( { cat $first/scaling_available_frequencies $first/scaling_boost_frequencies 2>/dev/null
+LADDER=$( { for q in $POLS; do cat $q/scaling_available_frequencies $q/scaling_boost_frequencies; done 2>/dev/null
 	cut -d' ' -f1 $first/stats/time_in_state 2>/dev/null; } |
 	tr ' ' '\n' | grep -E '^[0-9]+$' | sort -rnu | tr '\n' ' ')
-TOP=$(cat $first/cpuinfo_max_freq)
+TOP=$(cat $C/cpufreq/policy*/cpuinfo_max_freq $first/cpuinfo_max_freq 2>/dev/null | sort -rn | head -1)
 LADDER=$(for f in $LADDER; do [ $f -le $TOP ] && echo $f; done | tr '\n' ' ')
 [ -z "$LADDER" ] && LADDER="$TOP 1690000 1586000 1482000 1352000 1248000 1144000 1014000"
 log "policies:$POLS ladder: $LADDER"
@@ -53,6 +52,22 @@ for z in /sys/class/thermal/thermal_zone*; do
 	case "$t" in therm_zone0|therm_zone1|*cpu*|*CPU*|*tmu*|*TMU*|*exynos*|*soc*|*SOC*|*ap_therm*|*AP*) ZONES="$ZONES $z";; esac
 done
 BATT=""
+if [ -n "$ZONES" ]; then
+	[ -w $C/cpufreq/boost ] && echo 1 > $C/cpufreq/boost 2>/dev/null
+else
+	# no CPU sensor (mainline kernel without a TMU driver yet): no boost, stock max 1586 MHz
+	[ -w $C/cpufreq/boost ] && echo 0 > $C/cpufreq/boost 2>/dev/null
+fi
+# re-read the ladder: it depends on boost
+LADDER=$( { for q in $POLS; do cat $q/scaling_available_frequencies $q/scaling_boost_frequencies; done 2>/dev/null
+	cut -d' ' -f1 $first/stats/time_in_state 2>/dev/null; } | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -rnu | tr '\n' ' ')
+TOP=$(cat $C/cpufreq/policy*/cpuinfo_max_freq $first/cpuinfo_max_freq 2>/dev/null | sort -rn | head -1)
+[ -z "$ZONES" ] && [ -f $C/cpufreq/boost ] && TOP=1586000
+# optional user/trial cap (Settings > CPU, or a test boot): /etc/gta2/maxfreq in kHz
+# default 1794 MHz (tested on all 8 cores); lower caps chosen in Settings > CPU
+MAXF=$(cat /etc/gta2/maxfreq 2>/dev/null || echo 1794000); [ "$TOP" -gt "$MAXF" ] && TOP=$MAXF
+LADDER=$(for f in $LADDER; do [ $f -le $TOP ] && echo $f; done | tr '\n' ' ')
+[ -z "$LADDER" ] && LADDER="$TOP"
 if [ -z "$ZONES" ]; then
 	for b in /sys/class/power_supply/*; do
 		[ "$(cat $b/type 2>/dev/null)" = Battery ] && [ -r $b/temp ] && { BATT=$b/temp; break; }

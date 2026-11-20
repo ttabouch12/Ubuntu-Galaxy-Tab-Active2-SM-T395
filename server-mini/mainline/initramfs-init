@@ -1,0 +1,44 @@
+#!/bin/busybox sh
+# gta2srv mainline initramfs
+#  - SM5705 MUIC: route D+/D- to USB (S-Boot leaves it on UART)
+#  - failsafe: counts boot attempts in /data/gta2srv/ml/tries; the booted system resets it (gta2-bootok).
+#    3rd attempt without success -> extlinux.conf is renamed -> U-Boot finds nothing -> reboots into TWRP.
+#  - loop-mount /data/gta2srv/rootfs.img and switch_root
+/bin/busybox --install -s /bin
+export PATH=/bin
+mount -t proc proc /proc; mount -t sysfs sysfs /sys; mount -t devtmpfs dev /dev
+k() { echo "gta2srv: $*" > /dev/kmsg; }
+k initramfs
+for b in /sys/bus/i2c/devices/i2c-*; do readlink -f $b | grep -q 13870000 && BUS=${b##*-}; done
+[ -n "$BUS" ] && { i2cset -y $BUS 0x25 0x13 0x24 && k "muic usb (i2c-$BUS)"; }
+for i in $(seq 1 100); do [ -b /dev/mmcblk0p24 ] && break; sleep 0.1; done
+fail() { k "$*"; sleep 5; reboot -f; }
+mount -t ext4 /dev/mmcblk0p24 /data || fail "no userdata"
+# crash recorder: save the previous boot's kernel log (ramoops) if there is one
+mkdir -p /pstore; mount -t pstore pstore /pstore 2>/dev/null && [ -n "$(ls /pstore 2>/dev/null)" ] && {
+  P=/data/gta2srv/ml/pstore/$(date +%s 2>/dev/null || echo x); mkdir -p $P; cp /pstore/* $P/ 2>/dev/null; rm -f /pstore/*; sync; k "saved previous crash log to $P"; }
+umount /pstore 2>/dev/null
+# one-shot trial: a test kernel is booted once. Its first act is to put the known-good extlinux.conf back,
+# so ANY reset (crash, watchdog, hang + power key) returns to the good kernel. Confirmed by hand when it works.
+X=/data/extlinux
+if [ -f $X/trial ] && [ -f $X/extlinux.conf.good ]; then
+  cp $X/extlinux.conf.good $X/extlinux.conf; mv $X/trial $X/trial.booted; sync; k "trial boot: good config restored for the next boot"
+fi
+T=/data/gta2srv/ml/tries; n=$(cat $T 2>/dev/null); n=$(( ${n:-0} + 1 )); echo $n > $T; sync
+k "boot attempt $n"
+if [ $n -gt 2 ]; then
+  k "too many failed boots -> disarm extlinux, next boot goes to TWRP"
+  echo 0 > $T; mv /data/extlinux/extlinux.conf /data/extlinux/extlinux.conf.failed; sync; umount /data; reboot -f
+fi
+# mainline uses its OWN copy of the system (a 6.x boot must never touch the 3.18 one)
+R=/data/gta2srv/ml/rootfs.img
+[ -f $R ] || fail "no $R (copy /data/gta2srv/rootfs.img there)"
+mount -o loop,noatime $R /newroot || fail "rootfs mount failed"
+# files in /data/gta2srv/ml/inject/ are copied over the system on every mainline boot (fixes without loop mounts)
+if [ -d /data/gta2srv/ml/inject ]; then
+  for d in /data/gta2srv/ml/inject/*; do [ -e "$d" ] && cp -a "$d" /newroot/ 2>/dev/kmsg; done; k "inject applied"
+fi
+mkdir -p /newroot/userdata; mount --move /data /newroot/userdata
+mount --move /dev /newroot/dev; umount /proc /sys 2>/dev/null
+echo "gta2srv: init: $(ls -l /newroot/sbin/init 2>&1) | $(ls -ld /newroot /newroot/userdata 2>&1 | tr '\n' ' ')" > /newroot/dev/kmsg
+exec switch_root /newroot /sbin/init 2>/newroot/dev/kmsg

@@ -8,7 +8,7 @@ apt-get update -qq
 apt-get install -y -qq --no-install-recommends systemd-sysv udev dbus kmod iproute2 iputils-ping openssh-server network-manager wpasupplicant \
   sudo nano less ca-certificates curl htop systemd-timesyncd e2fsprogs tzdata dnsmasq-base \
   xserver-xorg-core xserver-xorg-video-fbdev xserver-xorg-input-libinput xinit x11-xserver-utils xinput xterm xdotool x11-utils \
-  matchbox-window-manager matchbox-keyboard python3-tk python3-pil python3-pil.imagetk fonts-dejavu-core surf samba wsdd \
+  matchbox-window-manager matchbox-keyboard python3-tk python3-pil python3-pil.imagetk fonts-dejavu-core surf samba wsdd bluez \
   docker.io iptables \
   libsdl2-2.0-0 libavcodec60 libopus0 libcurl4t64 libevdev2 libavahi-client3 libasound2t64 libpulse0 libegl1 libgles2 2>&1 | tail -2
 tar xzf /in/ml_bin.tgz -C /usr/local; ldconfig; ldd /usr/local/bin/moonlight | grep "not found"
@@ -44,7 +44,7 @@ ExecStart=/bin/sh -c 'echo 1 > /sys/block/zram0/reset; echo 536870912 > /sys/blo
 WantedBy=multi-user.target
 S
 systemctl disable nmbd 2>/dev/null; systemctl mask samba-ad-dc 2>/dev/null; rm -f /etc/samba/smb.conf
-systemctl enable gta2-lpm gta2-share smbd gta2-wsdd gta2-bootok gta2-wdt gta2-ml-setup gta2-cpu gta2-thermal gta2-import gta2-wlan gta2-usbnet gta2-fbinit gta2-gui gta2-portainer gta2-sshkeys gta2-zram gta2-dash.socket docker NetworkManager ssh systemd-timesyncd
+systemctl enable gta2-lpm gta2-share smbd gta2-wsdd gta2-bootok gta2-wdt gta2-ml-setup gta2-cpu gta2-thermal gta2-import gta2-wlan gta2-usbnet gta2-fbinit gta2-gui gta2-portainer gta2-sshkeys gta2-zram gta2-dash.socket gta2-panel.socket gta2-charge gta2-trialguard docker NetworkManager ssh systemd-timesyncd
 systemctl disable getty@tty1 apt-daily-upgrade.timer apt-daily.timer dpkg-db-backup.timer e2scrub_all.timer motd-news.timer e2scrub_reap.service systemd-pstore.service 2>/dev/null
 systemctl mask systemd-networkd-wait-online NetworkManager-wait-online ModemManager systemd-hostnamed e2scrub_reap
 systemctl set-default multi-user.target

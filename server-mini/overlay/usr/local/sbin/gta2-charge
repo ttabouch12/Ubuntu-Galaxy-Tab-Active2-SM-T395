@@ -1,0 +1,26 @@
+#!/bin/sh
+# gta2-charge: keep the battery between LIMIT-5 and LIMIT % (for tablets plugged in 24/7).
+#   gta2-charge          run the loop (systemd service)
+#   gta2-charge method   print the switch this kernel offers (empty = none)
+# Switch: mainline sm5705 charger "charge_behaviour" (auto / inhibit-charge), or 3.18 sec-battery "batt_slate_mode".
+CB=$(ls /sys/class/power_supply/*/charge_behaviour 2>/dev/null | head -1)
+SL=/sys/class/power_supply/battery/batt_slate_mode
+CAP=$(ls /sys/class/power_supply/*/capacity 2>/dev/null | head -1)
+method() { if [ -w "$CB" ]; then echo charge_behaviour; elif [ -w "$SL" ]; then echo slate_mode; fi; }
+set_charge() {  # 1 = allow, 0 = stop
+  case $(method) in
+    charge_behaviour) [ "$1" = 1 ] && echo auto > "$CB" || echo inhibit-charge > "$CB" ;;
+    slate_mode) [ "$1" = 1 ] && echo 0 > "$SL" || echo 1 > "$SL" ;;
+  esac 2>/dev/null
+}
+[ "${1:-}" = method ] && { method; exit 0; }
+[ -n "$(method)" ] || { echo "gta2-charge: no charge switch on this kernel"; exit 0; }
+on=1; set_charge 1
+trap 'set_charge 1; exit 0' TERM INT
+while :; do
+  L=$(cat /etc/gta2/charge_limit 2>/dev/null || echo 100); c=$(cat "$CAP" 2>/dev/null || echo 50)
+  if [ "$L" -ge 100 ]; then [ $on = 1 ] || { set_charge 1; on=1; }
+  elif [ "$c" -ge "$L" ] && [ $on = 1 ]; then set_charge 0; on=0; echo "stop at $c%"
+  elif [ "$c" -le $((L-5)) ] && [ $on = 0 ]; then set_charge 1; on=1; echo "resume at $c%"; fi
+  sleep 60 & wait $!
+done

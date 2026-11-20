@@ -1,0 +1,148 @@
+From 4ebc962a35285e975b1a883133a0b62ce333314a Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:29:03 +0300
+Subject: [PATCH 06/21] arm64: dts: exynos7870: add DSI, DECON, sysmmu and
+ watchdog nodes
+
+Display nodes as in Kaustabh Chakraborty's 'exynos7870: add DSI support'
+series (v4), plus the CPU cluster 0 watchdog (vendor: 0x10170000, SPI 100,
+exynos7-wdt with PMU syscon).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi | 97 ++++++++++++++++++++++
+ 1 file changed, 97 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index d5d347623..5b1b0b67b 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -145,6 +145,19 @@ chipid@10100000 {
+ 			reg = <0x10100000 0x100>;
+ 		};
+ 
++		watchdog_cl0: watchdog@10170000 {
++			compatible = "samsung,exynos7-wdt";
++			reg = <0x10170000 0x100>;
++			interrupts = <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>;
++
++			clock-names = "watchdog";
++			clocks = <&cmu_peri CLK_GOUT_PERI_WDT_CPUCL0_PCLK>;
++
++			samsung,syscon-phandle = <&pmu_system_controller>;
++
++			status = "disabled";
++		};
++
+ 		cmu_peri: clock-controller@101f0000 {
+ 			compatible = "samsung,exynos7870-cmu-peri";
+ 			reg = <0x101f0000 0x1000>;
+@@ -178,6 +191,14 @@ pmu_system_controller: system-controller@10480000 {
+ 				     "samsung,exynos7-pmu", "syscon";
+ 			reg = <0x10480000 0x10000>;
+ 
++			mipi_phy: mipi-phy {
++				compatible = "samsung,exynos7870-mipi-video-phy";
++				#phy-cells = <1>;
++
++				samsung,cam0-sysreg = <&syscon_cam0>;
++				samsung,disp-sysreg = <&syscon_disp>;
++			};
++
+ 			reboot-mode {
+ 				compatible = "syscon-reboot-mode";
+ 				offset = <0x080c>;
+@@ -675,6 +696,77 @@ cmu_isp: clock-controller@144d0000 {
+ 				 <&cmu_mif CLK_GOUT_MIF_CMU_ISP_VRA>;
+ 		};
+ 
++		syscon_cam0: system-controller@144f1040 {
++			compatible = "samsung,exynos7870-cam0-sysreg", "syscon";
++			reg = <0x144f1040 0x04>;
++		};
++
++		dsi: dsi@14800000 {
++			compatible = "samsung,exynos7870-mipi-dsi";
++			reg = <0x14800000 0x100>;
++			interrupts = <GIC_SPI 207 IRQ_TYPE_LEVEL_HIGH>;
++
++			clocks = <&cmu_dispaud CLK_GOUT_DISPAUD_BUS_DISP>,
++				 <&cmu_dispaud CLK_GOUT_DISPAUD_APB_DISP>,
++				 <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_MIPIPHY_TXBYTECLKHS_USER>,
++				 <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_MIPIPHY_RXCLKESC0_USER>;
++			clock-names = "bus", "pll", "byte", "esc";
++
++			phys = <&mipi_phy 1>;
++			phy-names = "dsim";
++
++			status = "disabled";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					dsi_to_decon: endpoint {
++						remote-endpoint = <&decon_to_dsi>;
++					};
++				};
++			};
++		};
++
++		decon: display-controller@14830000 {
++			compatible = "samsung,exynos7870-decon";
++			reg = <0x14830000 0x8000>;
++			interrupts = <GIC_SPI 201 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 202 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 203 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "fifo", "vsync", "lcd_sys";
++
++			clocks = <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_PLL>,
++				 <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_BUS_USER>,
++				 <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_DECON_ECLK>,
++				 <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_DECON_VCLK>;
++			clock-names = "pclk_decon0", "aclk_decon0",
++				      "decon0_eclk", "decon0_vclk";
++
++			iommus = <&sysmmu_decon>;
++
++			status = "disabled";
++
++			port {
++				decon_to_dsi: endpoint {
++					remote-endpoint = <&dsi_to_decon>;
++				};
++			};
++		};
++
++		sysmmu_decon: iommu@14860000 {
++			compatible = "samsung,exynos-sysmmu";
++			reg = <0x14860000 0x1000>;
++			interrupts = <GIC_SPI 193 IRQ_TYPE_LEVEL_HIGH>;
++			#iommu-cells = <0>;
++
++			clocks = <&cmu_dispaud CLK_GOUT_DISPAUD_MUX_BUS_USER>;
++			clock-names = "sysmmu";
++		};
++
+ 		pinctrl_dispaud: pinctrl@148c0000 {
+ 			compatible = "samsung,exynos7870-pinctrl";
+ 			reg = <0x148c0000 0x1000>;
+@@ -692,6 +784,11 @@ cmu_dispaud: clock-controller@148d0000 {
+ 				 <&cmu_mif CLK_GOUT_MIF_CMU_DISPAUD_DECON_ECLK>,
+ 				 <&cmu_mif CLK_GOUT_MIF_CMU_DISPAUD_DECON_VCLK>;
+ 		};
++
++		syscon_disp: system-controller@148f100c {
++			compatible = "samsung,exynos7870-disp-sysreg", "syscon";
++			reg = <0x148f100c 0x04>;
++		};
+ 	};
+ 
+ 	timer {
+-- 
+2.43.0
+

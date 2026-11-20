@@ -1,0 +1,172 @@
+From daea5388a7f6db33c41ba92875f2fb83638aec68 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:11:11 +0300
+Subject: [PATCH 12/21] clk: samsung: clk-cpu: Add Exynos7870 CPU clock layout
+
+Exynos7870 CPUCL0/CPUCL1 select the CPU clock with a 2:1 mux between the
+cluster PLL and a divided-down switch clock. Add a layout that parks the
+mux on the switch clock while the cluster PLL relocks, after clamping the
+switch rate to the lower of the old and new CPU frequency.
+
+The bus dividers of the cluster CMUs are left untouched.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHXPfaxZf24zPigwQ9z
+---
+ drivers/clk/samsung/clk-cpu.c | 113 ++++++++++++++++++++++++++++++++++
+ drivers/clk/samsung/clk-cpu.h |   2 +
+ 2 files changed, 115 insertions(+)
+
+diff --git a/drivers/clk/samsung/clk-cpu.c b/drivers/clk/samsung/clk-cpu.c
+index 300f8d5d3..c387de03d 100644
+--- a/drivers/clk/samsung/clk-cpu.c
++++ b/drivers/clk/samsung/clk-cpu.c
+@@ -564,6 +564,114 @@ static int exynos850_cpuclk_post_rate_change(struct clk_notifier_data *ndata,
+ 	return exynos850_alt_parent_set_max_rate(alt_parent, 0);
+ }
+ 
++/* ---- Exynos7870 ---------------------------------------------------------- */
++
++/*
++ * The CPU clock of both Exynos7870 clusters is the output of a 2:1 mux
++ * (CLK_CON_MUX_CLK_CPUCLx, select bit 12) that picks either the cluster PLL
++ * (0) or an alternate "switch" clock derived from the MIF bus PLL (1). The
++ * status register reports 1 << selected_parent in bits [13:12].
++ *
++ * While the cluster PLL is relocking, the mux is parked on the switch clock.
++ * That clock is divided down (CMU_MIF CLKCMU_CPUCLx_SWITCH divider) so that it
++ * never exceeds the lower of the old and the new CPU frequency.
++ *
++ * The CMU_CPUCLx bus dividers (ACLK, PCLK, ATCLK, ...) are not touched here;
++ * the vendor kernel loads their per-frequency values from a binary ECT table
++ * which is not available.
++ */
++#define E7870_MUX_SEL_SHIFT	12
++#define E7870_MUX_STAT_MASK	GENMASK(1, 0)
++/* Cluster PLL control register: enable and lock status bits */
++#define E7870_PLL_CON0		0x100
++#define E7870_PLL_ENABLE	BIT(31)
++#define E7870_PLL_LOCKED	BIT(29)
++/* Settling time of the switch divider and of the mux, usec */
++#define E7870_STAB_TIME		100
++
++static const struct exynos_cpuclk_regs e7870_cpuclk_regs = {
++	.mux_sel	= 0x208,
++	.mux_stat	= 0x608,
++};
++
++static int exynos7870_cpuclk_set_alt_rate(const struct clk_hw *alt_parent,
++					  unsigned long rate)
++{
++	int ret;
++
++	/*
++	 * The divider is a plain, non-closest one, so the resulting rate is
++	 * equal to or lower than the requested one.
++	 */
++	ret = clk_set_rate(alt_parent->clk, rate);
++	if (ret)
++		return ret;
++
++	udelay(E7870_STAB_TIME);
++	return 0;
++}
++
++static void exynos7870_cpuclk_select(struct exynos_cpuclk *cpuclk,
++				     unsigned int parent)
++{
++	const struct exynos_cpuclk_regs * const regs = cpuclk->chip->regs;
++	void __iomem *base = cpuclk->base;
++	unsigned long flags;
++	u32 val;
++
++	spin_lock_irqsave(cpuclk->lock, flags);
++
++	val = readl(base + regs->mux_sel);
++	val &= ~BIT(E7870_MUX_SEL_SHIFT);
++	val |= parent << E7870_MUX_SEL_SHIFT;
++	writel(val, base + regs->mux_sel);
++
++	wait_until_mux_stable(base + regs->mux_stat, E7870_MUX_SEL_SHIFT,
++			      E7870_MUX_STAT_MASK, BIT(parent));
++
++	spin_unlock_irqrestore(cpuclk->lock, flags);
++}
++
++/* Handler for pre-rate change notification from parent clock */
++static int exynos7870_cpuclk_pre_rate_change(struct clk_notifier_data *ndata,
++					     struct exynos_cpuclk *cpuclk)
++{
++	unsigned long alt_rate = min(ndata->old_rate, ndata->new_rate);
++	int ret;
++
++	ret = exynos7870_cpuclk_set_alt_rate(cpuclk->alt_parent, alt_rate);
++	if (ret)
++		return ret;
++
++	/* Run from the (slow enough) alternate parent while the PLL relocks */
++	exynos7870_cpuclk_select(cpuclk, 1);
++
++	return 0;
++}
++
++/* Handler for post-rate change notification from parent clock */
++static int exynos7870_cpuclk_post_rate_change(struct clk_notifier_data *ndata,
++					      struct exynos_cpuclk *cpuclk)
++{
++	u32 pll_con0 = readl(cpuclk->base + E7870_PLL_CON0);
++
++	/*
++	 * Never hand the CPUs over to a PLL that is off or not locked; staying
++	 * on the (slow) alternate parent is always safe.
++	 */
++	if ((pll_con0 & (E7870_PLL_ENABLE | E7870_PLL_LOCKED)) !=
++	    (E7870_PLL_ENABLE | E7870_PLL_LOCKED)) {
++		pr_err("%s: cluster PLL not locked, staying on alternate parent\n",
++		       __func__);
++		return -EBUSY;
++	}
++
++	/* Back to the main parent (cluster PLL) */
++	exynos7870_cpuclk_select(cpuclk, 0);
++
++	return 0;
++}
++
+ /* -------------------------------------------------------------------------- */
+ 
+ /* Common round rate callback usable for all types of CPU clocks */
+@@ -638,6 +746,11 @@ static const struct exynos_cpuclk_chip exynos_clkcpu_chips[] = {
+ 		.pre_rate_cb	= exynos850_cpuclk_pre_rate_change,
+ 		.post_rate_cb	= exynos850_cpuclk_post_rate_change,
+ 	},
++	[CPUCLK_LAYOUT_E7870] = {
++		.regs		= &e7870_cpuclk_regs,
++		.pre_rate_cb	= exynos7870_cpuclk_pre_rate_change,
++		.post_rate_cb	= exynos7870_cpuclk_post_rate_change,
++	},
+ };
+ 
+ /* helper function to register a CPU clock */
+diff --git a/drivers/clk/samsung/clk-cpu.h b/drivers/clk/samsung/clk-cpu.h
+index 892843611..8da4c2c1e 100644
+--- a/drivers/clk/samsung/clk-cpu.h
++++ b/drivers/clk/samsung/clk-cpu.h
+@@ -19,12 +19,14 @@
+  * @CPUCLK_LAYOUT_E5433: Exynos5433 compatible layout
+  * @CPUCLK_LAYOUT_E850_CL0: Exynos850 cluster 0 compatible layout
+  * @CPUCLK_LAYOUT_E850_CL1: Exynos850 cluster 1 compatible layout
++ * @CPUCLK_LAYOUT_E7870: Exynos7870 CPUCL0/CPUCL1 compatible layout
+  */
+ enum exynos_cpuclk_layout {
+ 	CPUCLK_LAYOUT_E4210,
+ 	CPUCLK_LAYOUT_E5433,
+ 	CPUCLK_LAYOUT_E850_CL0,
+ 	CPUCLK_LAYOUT_E850_CL1,
++	CPUCLK_LAYOUT_E7870,
+ };
+ 
+ /**
+-- 
+2.43.0
+

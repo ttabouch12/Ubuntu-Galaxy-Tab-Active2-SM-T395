@@ -1,0 +1,10 @@
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+dir /proc 0755 0 0
+dir /sys 0755 0 0
+dir /data 0755 0 0
+dir /newroot 0755 0 0
+dir /bin 0755 0 0
+file /bin/busybox /home/claude/gta2ml/pkg/busybox 0755 0 0
+file /init /home/claude/gta2ml/pkg/initramfs/init 0755 0 0
+dir /pstore 0755 0 0

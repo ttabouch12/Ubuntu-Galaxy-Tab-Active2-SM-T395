@@ -3,6 +3,31 @@
 Native Ubuntu 24.04 LTS (arm64), **no Android underneath**, built to turn the tablet into a small
 always-on server with a touch screen. Install and first steps are in the [main README](../README.md).
 
+## 1.3 changes
+
+* **New interface.** The look is shared from `gta2ui.py`: anti-aliased rounded cards, switches, steppers, segmented
+  choices and a touch slider, all drawn with PIL in Tk. The home screen has the popcorn logo, a clock, chips and 4
+  live stat cards.
+* **Keyboard rewritten Gboard-style** (`gta2-osk`): one canvas, a toolbar (Esc/Tab/Ctrl/Alt/arrows/hide), a number
+  row, the `abc` / `?123` / `=\<` layers, long-press accent popups, key-repeat backspace, one-shot Shift or Caps
+  lock, and S/M/L sizes.
+* **Settings v2** (`gta2-settings`): a category list, then a page per category. Root actions go through one helper,
+  `gta2-ctl` (time, device, updates, CPU, screen, Bluetooth, battery, Docker, SSH, VPN, hotspot), which the web
+  panel uses too.
+* **Web panel** on port 80 (`gta2-panel`, socket-activated, exits when idle): stats, Docker apps, an app store,
+  files, a live screen you can tap, and all settings. See [PANEL.md](PANEL.md).
+* **Charge limit** (`gta2-charge`): stops charging at N % and resumes at N-5 %. It uses `charge_behaviour` on
+  mainline, and Samsung's `batt_slate_mode` on 3.18 where that switch exists.
+* **Rotation:** Settings → Display offers portrait / upside-down / landscape / landscape-flipped. It changes the
+  Xorg `Rotate` option and `gta2-session` maps touch to match.
+* **Screen timeout** (backlight off when idle, the power key wakes it).
+* **microSD automount** (`gta2-sd` + udev): `/media/sdcard`, linked into the share as `SD card`.
+* **Bluetooth** (BlueZ) page: power, scan, pair, remove.
+* **CPU page:** the speed cap (Saver / Stock / 1.7 / 1.8 GHz) and the throttle temperature. `gta2-thermal` reads
+  `/etc/gta2/maxfreq` and `/etc/gta2/throttle`.
+* **Mainline 6.18 kernel (experimental):** CPU frequency scaling, TMU, charger switch and a one-shot safe test boot.
+  See [MAINLINE.md](MAINLINE.md).
+
 ## 1.2 changes
 
 * **Kernel `boot_srv5`:** CPU thermal throttling starts at **90 °C** instead of 76 °C (the trip points come from

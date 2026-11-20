@@ -1,0 +1,837 @@
+From 29f8f579158d5fab600692202cb6ac722e0835d6 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 11:13:53 +0300
+Subject: [PATCH 09/21] power: supply: sm5705_fuelgauge: add Silicon Mitus
+ SM5705 fuel gauge driver
+
+Add a power_supply driver for the voltage-tracking fuel gauge of the
+SM5705 companion chip found on Samsung Exynos7870 devices (I2C 0x71).
+
+It reports capacity, voltage, OCV, current, temperature, present,
+technology, design charge/voltage (from monitored-battery) and the
+status of the charger referenced by power-supplies. When the gauge
+reports that it has not been initialised, the battery model (tables and
+parameters, taken from the vendor kernel) is loaded from devicetree
+properties, following the vendor init sequence.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHWjrzX28CzyNMEnVDk
+---
+ .../supply/siliconmitus,sm5705-fuelgauge.yaml | 187 ++++++
+ drivers/power/supply/Kconfig                  |  10 +
+ drivers/power/supply/Makefile                 |   1 +
+ drivers/power/supply/sm5705_fuelgauge.c       | 575 ++++++++++++++++++
+ 4 files changed, 773 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-fuelgauge.yaml
+ create mode 100644 drivers/power/supply/sm5705_fuelgauge.c
+
+diff --git a/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-fuelgauge.yaml b/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-fuelgauge.yaml
+new file mode 100644
+index 000000000..d0416f99d
+--- /dev/null
++++ b/Documentation/devicetree/bindings/power/supply/siliconmitus,sm5705-fuelgauge.yaml
+@@ -0,0 +1,187 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/power/supply/siliconmitus,sm5705-fuelgauge.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Silicon Mitus SM5705 fuel gauge
++
++maintainers:
++  - Linux Exynos7870 maintainers <linux-samsung-soc@vger.kernel.org>
++
++description:
++  Voltage-tracking fuel gauge of the Silicon Mitus SM5705 companion chip.
++  The gauge is normally initialised by the bootloader. When the battery model
++  properties are present the driver loads them if the gauge reports that it is
++  not initialised. The register values are those of the Samsung vendor kernel
++  (battery_params node of the board device tree) and are specific to one
++  battery model.
++
++allOf:
++  - $ref: power-supply.yaml#
++
++properties:
++  compatible:
++    const: siliconmitus,sm5705-fuelgauge
++
++  reg:
++    maxItems: 1
++    description: I2C slave address, 0x71.
++
++  monitored-battery: true
++  power-supplies: true
++
++  siliconmitus,full-permille:
++    description:
++      State of charge, in tenths of a percent as reported by the gauge, that is
++      shown as 100 percent. Corresponds to capacity_max of the vendor tree.
++    minimum: 1
++    maximum: 1000
++    default: 1000
++
++  siliconmitus,discharge-table:
++    description: Discharge (voltage) table, vendor battery0,battery_table0.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 16
++    maxItems: 16
++
++  siliconmitus,q-table:
++    description: Charge (Q) table, vendor battery0,battery_table1.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 16
++    maxItems: 16
++
++  siliconmitus,rce-values:
++    description: RCE0..RCE2 register values, vendor battery0,rce_value.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 3
++    maxItems: 3
++
++  siliconmitus,rs-values:
++    description:
++      Internal resistance parameters, vendor battery0,rs_value. Cells are rs,
++      p_mix_factor, n_mix_factor, max, min. p_mix_factor is not written by
++      the driver.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 5
++    maxItems: 5
++
++  siliconmitus,mix-values:
++    description: Mix rate and mix init blank, vendor battery0,mix_value.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 2
++    maxItems: 2
++
++  siliconmitus,topoff-soc:
++    description:
++      Enable flag, top-off state of charge register value and top-off current
++      in mA (informational), vendor battery0,topoff_soc.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 3
++    maxItems: 3
++
++  siliconmitus,cycle-config:
++    description: Cycle counter high limit, low limit and control, vendor battery0,cycle_cfg.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 3
++    maxItems: 3
++
++  siliconmitus,curr-offset:
++    description:
++      Automatic current offset tracking enable flag and current offset
++      register value, vendor battery0,curr_offset.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 2
++    maxItems: 2
++
++  siliconmitus,dtcd-value:
++    description: DTCD register value, vendor battery0,dtcd_value.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++  siliconmitus,vit-period:
++    description: VIT period register value, vendor battery0,vit_period.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++  siliconmitus,misc:
++    description: MISC register value, vendor battery0,misc.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++  siliconmitus,volt-cal:
++    description: Voltage calibration register value, vendor battery0,volt_cal.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++  siliconmitus,p-curr-cal:
++    description: Positive current slope calibration, vendor battery0,p_curr_cal.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++  siliconmitus,n-curr-cal:
++    description: Negative current slope calibration, vendor battery0,n_curr_cal.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++  siliconmitus,data-version:
++    description:
++      Battery data version, must match the one the bootloader programs,
++      vendor battery0,data_ver.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++required:
++  - compatible
++  - reg
++
++dependencies:
++  siliconmitus,discharge-table:
++    - siliconmitus,q-table
++    - siliconmitus,rce-values
++    - siliconmitus,rs-values
++    - siliconmitus,mix-values
++    - siliconmitus,topoff-soc
++    - siliconmitus,cycle-config
++    - siliconmitus,curr-offset
++    - siliconmitus,dtcd-value
++    - siliconmitus,vit-period
++    - siliconmitus,misc
++    - siliconmitus,volt-cal
++    - siliconmitus,p-curr-cal
++    - siliconmitus,n-curr-cal
++    - siliconmitus,data-version
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    battery: battery {
++        compatible = "simple-battery";
++        voltage-min-design-microvolt = <3400000>;
++        voltage-max-design-microvolt = <4400000>;
++        charge-full-design-microamp-hours = <4450000>;
++    };
++
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        fuel-gauge@71 {
++            compatible = "siliconmitus,sm5705-fuelgauge";
++            reg = <0x71>;
++            monitored-battery = <&battery>;
++            power-supplies = <&charger>;
++            siliconmitus,full-permille = <990>;
++            siliconmitus,discharge-table = <0x1400 0x1b8a 0x1d19 0x1d7c 0x1d97 0x1df0 0x1e27 0x1e4f
++                                            0x1ebf 0x1ebf 0x1f34 0x1ffc 0x206c 0x2090 0x2151 0x2400>;
++            siliconmitus,q-table = <0x0 0x49 0x12d 0x210 0x4bc 0x684 0x92f 0xda2
++                                    0x12f9 0x12f9 0x14c1 0x1a18 0x1be0 0x1c96 0x1fca 0x1fda>;
++            siliconmitus,rce-values = <0x04e1 0x03e6 0x01d7>;
++            siliconmitus,rs-values = <0x0051 0x147 0x146 0x3800 0x007a>;
++            siliconmitus,mix-values = <0x0403 0x0004>;
++            siliconmitus,topoff-soc = <0 3 200>;
++            siliconmitus,cycle-config = <7 1 3>;
++            siliconmitus,curr-offset = <1 0x0000>;
++            siliconmitus,dtcd-value = <0x1>;
++            siliconmitus,vit-period = <0x3506>;
++            siliconmitus,misc = <0x0060>;
++            siliconmitus,volt-cal = <0x8000>;
++            siliconmitus,p-curr-cal = <0x0061>;
++            siliconmitus,n-curr-cal = <0x005c>;
++            siliconmitus,data-version = <0x8>;
++        };
++    };
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index dca4be23e..4e86bd18f 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -832,6 +832,16 @@ config CHARGER_SMB347
+ 	  Say Y to include support for Summit Microelectronics SMB345,
+ 	  SMB347 or SMB358 Battery Charger.
+ 
++config BATTERY_SM5705
++	tristate "Silicon Mitus SM5705 fuel gauge"
++	depends on I2C
++	select REGMAP_I2C
++	help
++	  Say Y here to enable support for the voltage-tracking fuel gauge
++	  of the Silicon Mitus SM5705 companion chip, found on some Samsung
++	  Exynos7870 devices. It reports the battery voltage, current,
++	  temperature and state of charge.
++
+ config CHARGER_TPS65090
+ 	tristate "TPS65090 battery charger driver"
+ 	depends on MFD_TPS65090
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index 99a820d38..f78771206 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -105,6 +105,7 @@ obj-$(CONFIG_CHARGER_BQ25980)	+= bq25980_charger.o
+ obj-$(CONFIG_CHARGER_BQ256XX)	+= bq256xx_charger.o
+ obj-$(CONFIG_CHARGER_RK817)	+= rk817_charger.o
+ obj-$(CONFIG_CHARGER_SMB347)	+= smb347-charger.o
++obj-$(CONFIG_BATTERY_SM5705)	+= sm5705_fuelgauge.o
+ obj-$(CONFIG_CHARGER_TPS65090)	+= tps65090-charger.o
+ obj-$(CONFIG_CHARGER_TPS65217)	+= tps65217_charger.o
+ obj-$(CONFIG_AXP288_FUEL_GAUGE) += axp288_fuel_gauge.o
+diff --git a/drivers/power/supply/sm5705_fuelgauge.c b/drivers/power/supply/sm5705_fuelgauge.c
+new file mode 100644
+index 000000000..5a4eda461
+--- /dev/null
++++ b/drivers/power/supply/sm5705_fuelgauge.c
+@@ -0,0 +1,575 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Fuel gauge driver for the Silicon Mitus SM5705 companion chip
++ *
++ * The SM5705 contains a voltage-tracking fuel gauge at I2C address 0x71.
++ * The gauge is normally programmed by the bootloader; this driver reads the
++ * measurements and, when the gauge reports that it has not been initialised
++ * (power-on or abnormal reset), writes the battery model from the device tree.
++ *
++ * Reference: Samsung vendor kernel drivers/ifpmic/battery_v2/sm5705_fuelgauge.c
++ */
++
++#include <linux/array_size.h>
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/math.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/cleanup.h>
++#include <linux/power_supply.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++#include <linux/units.h>
++
++/* 16 bit little endian registers */
++#define SM5705_FG_REG_DEVICE_ID		0x00
++#define SM5705_FG_REG_CNTL		0x01
++#define SM5705_FG_REG_SOC		0x05
++#define SM5705_FG_REG_OCV		0x06
++#define SM5705_FG_REG_VOLTAGE		0x07
++#define SM5705_FG_REG_CURRENT		0x08
++#define SM5705_FG_REG_TEMPERATURE	0x09
++#define SM5705_FG_REG_FG_OP_STATUS	0x10
++#define SM5705_FG_REG_TOPOFFSOC		0x12
++#define SM5705_FG_REG_PARAM_CTRL	0x13
++#define SM5705_FG_REG_SOC_CYCLE_CFG	0x15
++#define SM5705_FG_REG_VIT_PERIOD	0x1a
++#define SM5705_FG_REG_MIX_RATE		0x1b
++#define SM5705_FG_REG_MIX_INIT_BLANK	0x1c
++#define SM5705_FG_REG_RESERVED		0x1f
++#define SM5705_FG_REG_RCE0		0x20
++#define SM5705_FG_REG_DTCD		0x23
++#define SM5705_FG_REG_AUTO_RS_MAN	0x24
++#define SM5705_FG_REG_RS_MIX_FACTOR	0x25
++#define SM5705_FG_REG_RS_MAX		0x26
++#define SM5705_FG_REG_RS_MIN		0x27
++#define SM5705_FG_REG_IOCV_MAN		0x2e
++#define SM5705_FG_REG_VOLT_CAL		0x50
++#define SM5705_FG_REG_CURR_OFF		0x51
++#define SM5705_FG_REG_CURR_P_SLOPE	0x52
++#define SM5705_FG_REG_CURR_N_SLOPE	0x53
++#define SM5705_FG_REG_MISC		0x90
++#define SM5705_FG_REG_RESET		0x91
++#define SM5705_FG_REG_TABLE_START	0xa0
++#define SM5705_FG_REG_MAX		0xbf
++
++#define SM5705_FG_INIT_MARK		0xa000
++#define SM5705_FG_PARAM_UNLOCK_CODE	0x3700
++#define SM5705_FG_PARAM_LOCK_CODE	0x0000
++#define SM5705_FG_TABLE_LEN		0xf	/* real table length - 1 */
++#define SM5705_FG_NUM_TABLE_ENTRIES	16
++#define SM5705_FG_NUM_TABLES		2	/* discharge (voltage) and Q table */
++
++#define SM5705_FG_CNTL_MIX_MODE		BIT(15)
++#define SM5705_FG_CNTL_TEMP_MEASURE	BIT(14)
++#define SM5705_FG_CNTL_TOPOFF_SOC	BIT(13)
++#define SM5705_FG_CNTL_MANUAL_OCV	BIT(10)
++
++/* FG_OP_STATUS bit 4 is set once the gauge parameters have been loaded */
++#define SM5705_FG_OP_STATUS_INIT_DONE	BIT(4)
++#define SM5705_FG_BATTERY_VERSION_MASK	0x00f0
++
++struct sm5705_fg_params {
++	bool valid;
++	u32 discharge_table[SM5705_FG_NUM_TABLE_ENTRIES];
++	u32 q_table[SM5705_FG_NUM_TABLE_ENTRIES];
++	u32 rce[3];
++	u32 rs[5];		/* rs, p_mix_factor, n_mix_factor, max, min */
++	u32 mix[2];		/* mix_rate, init_blank */
++	u32 topoff[3];		/* enable, soc, current (mA, unused) */
++	u32 cycle_cfg[3];	/* high_limit, low_limit, cntl */
++	u32 curr_offset[2];	/* en_auto, offset */
++	u32 dtcd;
++	u32 vit_period;
++	u32 misc;
++	u32 volt_cal;
++	u32 p_curr_cal;
++	u32 n_curr_cal;
++	u32 data_ver;
++};
++
++struct sm5705_fg {
++	struct device *dev;
++	struct regmap *regmap;
++	struct power_supply *psy;
++	struct power_supply_battery_info *battery_info;
++	struct sm5705_fg_params params;
++	struct mutex lock;
++	u32 full_permille;
++	int last_soc;		/* in 0.1 percent */
++};
++
++static const struct regmap_config sm5705_fg_regmap_config = {
++	.reg_bits		= 8,
++	.val_bits		= 16,
++	.val_format_endian	= REGMAP_ENDIAN_LITTLE,
++	.max_register		= SM5705_FG_REG_MAX,
++	.cache_type		= REGCACHE_NONE,
++};
++
++static int sm5705_fg_needs_init(struct sm5705_fg *fg, bool *needs_init)
++{
++	unsigned int val;
++	int ret;
++
++	ret = regmap_read(fg->regmap, SM5705_FG_REG_FG_OP_STATUS, &val);
++	if (ret)
++		return ret;
++
++	*needs_init = !(val & SM5705_FG_OP_STATUS_INIT_DONE);
++
++	return 0;
++}
++
++#define SM5705_FG_WRITE(fg, reg, val)					\
++	do {								\
++		int __ret = regmap_write((fg)->regmap, (reg), (val));	\
++		if (__ret)						\
++			return __ret;					\
++	} while (0)
++
++/*
++ * Load the battery model into the gauge. This follows the sequence of the
++ * vendor driver (sm5705_fg_reg_init()), except that the initial open circuit
++ * voltage is taken straight from the OCV register instead of analysing the
++ * I-OCV sample buffers.
++ */
++static int sm5705_fg_load_params(struct sm5705_fg *fg)
++{
++	const struct sm5705_fg_params *p = &fg->params;
++	const u32 *tables[SM5705_FG_NUM_TABLES] = { p->discharge_table, p->q_table };
++	unsigned int ocv, cntl, readback = 0, iocv;
++	int i, j, ret, retry;
++
++	ret = regmap_read(fg->regmap, SM5705_FG_REG_OCV, &ocv);
++	if (ret)
++		return ret;
++	ocv &= 0x7fff;
++
++	/* Init mark, then unlock the parameter registers */
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_RESET, SM5705_FG_INIT_MARK);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_PARAM_CTRL, SM5705_FG_PARAM_UNLOCK_CODE);
++
++	for (i = 0; i < ARRAY_SIZE(p->rce); i++)
++		SM5705_FG_WRITE(fg, SM5705_FG_REG_RCE0 + i, p->rce[i]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_DTCD, p->dtcd);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_AUTO_RS_MAN, p->rs[0]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_VIT_PERIOD, p->vit_period);
++
++	/* Table length + unlock */
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_PARAM_CTRL,
++			SM5705_FG_PARAM_UNLOCK_CODE | SM5705_FG_TABLE_LEN);
++
++	for (i = 0; i < SM5705_FG_NUM_TABLES; i++) {
++		unsigned int base = SM5705_FG_REG_TABLE_START + (i << 4);
++
++		for (j = 0; j < SM5705_FG_NUM_TABLE_ENTRIES; j++) {
++			for (retry = 0; retry < 2; retry++) {
++				SM5705_FG_WRITE(fg, base + j, tables[i][j]);
++				msleep(10);
++				ret = regmap_read(fg->regmap, base + j, &readback);
++				if (ret)
++					return ret;
++				if (readback == tables[i][j])
++					break;
++			}
++			if (readback != tables[i][j])
++				dev_warn(fg->dev, "table %d entry %d verify failed (%#x != %#x)\n",
++					 i, j, readback, tables[i][j]);
++		}
++	}
++
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_RS_MIX_FACTOR, p->rs[2]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_RS_MAX, p->rs[3]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_RS_MIN, p->rs[4]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_MIX_RATE, p->mix[0]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_MIX_INIT_BLANK, p->mix[1]);
++
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_VOLT_CAL, p->volt_cal);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_CURR_OFF, p->curr_offset[1]);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_CURR_P_SLOPE, p->p_curr_cal);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_CURR_N_SLOPE, p->n_curr_cal);
++
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_MISC, p->misc);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_TOPOFFSOC, p->topoff[1]);
++
++	cntl = SM5705_FG_CNTL_MIX_MODE | SM5705_FG_CNTL_TEMP_MEASURE |
++	       SM5705_FG_CNTL_MANUAL_OCV;
++	if (p->topoff[0])
++		cntl |= SM5705_FG_CNTL_TOPOFF_SOC;
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_CNTL, cntl);
++
++	/* Lock the parameter registers again */
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_PARAM_CTRL,
++			SM5705_FG_PARAM_LOCK_CODE | SM5705_FG_TABLE_LEN);
++
++	/* Initial open circuit voltage, compensated by the voltage offset */
++	if (p->volt_cal & 0x80)
++		iocv = ocv - (p->volt_cal & 0x7f);
++	else
++		iocv = ocv + (p->volt_cal & 0x7f);
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_IOCV_MAN, iocv);
++
++	msleep(20);
++
++	/* Battery data version, must match the bootloader's */
++	SM5705_FG_WRITE(fg, SM5705_FG_REG_RESERVED,
++			(p->data_ver << 4) & SM5705_FG_BATTERY_VERSION_MASK);
++
++	return 0;
++}
++
++static int sm5705_fg_init(struct sm5705_fg *fg)
++{
++	const struct sm5705_fg_params *p = &fg->params;
++	bool needs_init;
++	int ret;
++
++	ret = sm5705_fg_needs_init(fg, &needs_init);
++	if (ret)
++		return ret;
++
++	if (!needs_init)
++		return 0;
++
++	if (!p->valid) {
++		dev_warn(fg->dev,
++			 "gauge is not initialised and no battery model in DT, SOC will be wrong\n");
++		return 0;
++	}
++
++	dev_info(fg->dev, "gauge not initialised, loading battery model\n");
++
++	/* Cycle counter configuration is written before the model */
++	ret = regmap_write(fg->regmap, SM5705_FG_REG_SOC_CYCLE_CFG,
++			   p->cycle_cfg[2] | (p->cycle_cfg[0] << 12) |
++			   (p->cycle_cfg[1] << 8));
++	if (ret)
++		return ret;
++
++	ret = sm5705_fg_load_params(fg);
++	if (ret)
++		return ret;
++
++	/* Without automatic offset tracking the DT value is authoritative */
++	if (!p->curr_offset[0])
++		ret = regmap_write(fg->regmap, SM5705_FG_REG_CURR_OFF,
++				   p->curr_offset[1]);
++
++	return ret;
++}
++
++/* Voltage register: [13:11] volts, [10:0] fraction of a volt in 1/2048 */
++static int sm5705_fg_voltage_uv(unsigned int raw, unsigned int int_mask)
++{
++	unsigned int volts = (raw & int_mask) >> 11;
++
++	return volts * MICRO + DIV_ROUND_CLOSEST((raw & 0x7ff) * MICRO, 2048);
++}
++
++static int sm5705_fg_read_soc(struct sm5705_fg *fg, int *permille)
++{
++	unsigned int raw;
++	int ret;
++
++	ret = regmap_read(fg->regmap, SM5705_FG_REG_SOC, &raw);
++	if (ret)
++		return ret;
++
++	/* [15:8] percent, [7:0] fraction in 1/256 percent -> 0.1 percent */
++	*permille = ((raw & 0xff00) >> 8) * 10 + ((raw & 0xff) * 10) / 256;
++
++	return 0;
++}
++
++static int sm5705_fg_read_charger_status(struct sm5705_fg *fg,
++					 union power_supply_propval *val)
++{
++	struct power_supply *charger;
++	int ret;
++
++	charger = power_supply_get_by_reference(dev_fwnode(fg->dev),
++						"power-supplies");
++	if (IS_ERR_OR_NULL(charger)) {
++		val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
++		return 0;
++	}
++
++	ret = power_supply_get_property(charger, POWER_SUPPLY_PROP_STATUS, val);
++	power_supply_put(charger);
++	if (ret)
++		val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
++
++	return 0;
++}
++
++static int sm5705_fg_get_property(struct power_supply *psy,
++				  enum power_supply_property psp,
++				  union power_supply_propval *val)
++{
++	struct sm5705_fg *fg = power_supply_get_drvdata(psy);
++	unsigned int raw;
++	bool needs_init;
++	int ret, soc;
++
++	guard(mutex)(&fg->lock);
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_STATUS:
++		return sm5705_fg_read_charger_status(fg, val);
++	case POWER_SUPPLY_PROP_PRESENT:
++		/* The gauge cannot detect the battery */
++		val->intval = 1;
++		return 0;
++	case POWER_SUPPLY_PROP_TECHNOLOGY:
++		if (fg->battery_info &&
++		    fg->battery_info->technology != POWER_SUPPLY_TECHNOLOGY_UNKNOWN)
++			val->intval = fg->battery_info->technology;
++		else
++			val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
++		return 0;
++	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
++		ret = regmap_read(fg->regmap, SM5705_FG_REG_VOLTAGE, &raw);
++		if (ret)
++			return ret;
++		val->intval = sm5705_fg_voltage_uv(raw, 0x3800);
++		return 0;
++	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
++		ret = regmap_read(fg->regmap, SM5705_FG_REG_OCV, &raw);
++		if (ret)
++			return ret;
++		val->intval = sm5705_fg_voltage_uv(raw, 0x7800);
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_NOW:
++		ret = regmap_read(fg->regmap, SM5705_FG_REG_CURRENT, &raw);
++		if (ret)
++			return ret;
++		/* [15] sign, [12:11] amperes, [10:0] fraction in 1/2048 A */
++		val->intval = sm5705_fg_voltage_uv(raw, 0x1800);
++		if (raw & BIT(15))
++			val->intval = -val->intval;
++		return 0;
++	case POWER_SUPPLY_PROP_TEMP:
++		ret = regmap_read(fg->regmap, SM5705_FG_REG_TEMPERATURE, &raw);
++		if (ret)
++			return ret;
++		/* [15] sign, [14:8] degrees, [7:4] fraction in 1/16 degree */
++		val->intval = ((raw & 0x7f00) >> 8) * 10 +
++			      (((raw & 0x00f0) >> 4) * 10) / 16;
++		if (raw & BIT(15))
++			val->intval = -val->intval;
++		return 0;
++	case POWER_SUPPLY_PROP_CAPACITY:
++		/* The gauge forgets its model on an abnormal reset */
++		ret = sm5705_fg_needs_init(fg, &needs_init);
++		if (!ret && needs_init) {
++			dev_warn(fg->dev, "gauge was reset, reloading battery model\n");
++			ret = sm5705_fg_init(fg);
++			if (ret)
++				return ret;
++			/* The first measurement after a reload is not valid */
++			val->intval = DIV_ROUND_CLOSEST(fg->last_soc, 10);
++			return 0;
++		}
++		ret = sm5705_fg_read_soc(fg, &soc);
++		if (ret)
++			return ret;
++		fg->last_soc = soc;
++		/* Scale so that "full" (full_permille) reads as 100 percent */
++		soc = DIV_ROUND_CLOSEST(soc * 1000, fg->full_permille);
++		val->intval = clamp(DIV_ROUND_CLOSEST(soc, 10), 0, 100);
++		return 0;
++	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
++		if (!fg->battery_info || fg->battery_info->charge_full_design_uah <= 0)
++			return -ENODATA;
++		val->intval = fg->battery_info->charge_full_design_uah;
++		return 0;
++	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
++		if (!fg->battery_info || fg->battery_info->voltage_max_design_uv <= 0)
++			return -ENODATA;
++		val->intval = fg->battery_info->voltage_max_design_uv;
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static const enum power_supply_property sm5705_fg_props[] = {
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_PRESENT,
++	POWER_SUPPLY_PROP_TECHNOLOGY,
++	POWER_SUPPLY_PROP_VOLTAGE_NOW,
++	POWER_SUPPLY_PROP_VOLTAGE_OCV,
++	POWER_SUPPLY_PROP_CURRENT_NOW,
++	POWER_SUPPLY_PROP_TEMP,
++	POWER_SUPPLY_PROP_CAPACITY,
++	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
++	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
++};
++
++static const struct power_supply_desc sm5705_fg_desc = {
++	.name		= "sm5705-fuelgauge",
++	.type		= POWER_SUPPLY_TYPE_BATTERY,
++	.properties	= sm5705_fg_props,
++	.num_properties	= ARRAY_SIZE(sm5705_fg_props),
++	.get_property	= sm5705_fg_get_property,
++};
++
++static int sm5705_fg_read_u32s(struct device *dev, const char *name,
++			       u32 *dest, size_t count)
++{
++	int ret = device_property_read_u32_array(dev, name, dest, count);
++
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot read %s (%zu cells)\n",
++				     name, count);
++
++	return 0;
++}
++
++/* The battery model is optional, but must be complete when present. */
++static int sm5705_fg_parse_params(struct sm5705_fg *fg)
++{
++	struct device *dev = fg->dev;
++	struct sm5705_fg_params *p = &fg->params;
++	int ret;
++
++	if (!device_property_present(dev, "siliconmitus,discharge-table"))
++		return 0;
++
++#define SM5705_FG_READ(name, field)					\
++	do {								\
++		ret = sm5705_fg_read_u32s(dev, name, (field), ARRAY_SIZE(field)); \
++		if (ret)						\
++			return ret;					\
++	} while (0)
++#define SM5705_FG_READ1(name, field)					\
++	do {								\
++		ret = sm5705_fg_read_u32s(dev, name, &(field), 1);	\
++		if (ret)						\
++			return ret;					\
++	} while (0)
++
++	SM5705_FG_READ("siliconmitus,discharge-table", p->discharge_table);
++	SM5705_FG_READ("siliconmitus,q-table", p->q_table);
++	SM5705_FG_READ("siliconmitus,rce-values", p->rce);
++	SM5705_FG_READ("siliconmitus,rs-values", p->rs);
++	SM5705_FG_READ("siliconmitus,mix-values", p->mix);
++	SM5705_FG_READ("siliconmitus,topoff-soc", p->topoff);
++	SM5705_FG_READ("siliconmitus,cycle-config", p->cycle_cfg);
++	SM5705_FG_READ("siliconmitus,curr-offset", p->curr_offset);
++	SM5705_FG_READ1("siliconmitus,dtcd-value", p->dtcd);
++	SM5705_FG_READ1("siliconmitus,vit-period", p->vit_period);
++	SM5705_FG_READ1("siliconmitus,misc", p->misc);
++	SM5705_FG_READ1("siliconmitus,volt-cal", p->volt_cal);
++	SM5705_FG_READ1("siliconmitus,p-curr-cal", p->p_curr_cal);
++	SM5705_FG_READ1("siliconmitus,n-curr-cal", p->n_curr_cal);
++	SM5705_FG_READ1("siliconmitus,data-version", p->data_ver);
++
++#undef SM5705_FG_READ
++#undef SM5705_FG_READ1
++
++	p->valid = true;
++
++	return 0;
++}
++
++static void sm5705_fg_put_battery_info(void *data)
++{
++	struct sm5705_fg *fg = data;
++
++	power_supply_put_battery_info(fg->psy, fg->battery_info);
++}
++
++static int sm5705_fg_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct power_supply_config psy_cfg = {};
++	struct sm5705_fg *fg;
++	unsigned int id;
++	int ret;
++
++	fg = devm_kzalloc(dev, sizeof(*fg), GFP_KERNEL);
++	if (!fg)
++		return -ENOMEM;
++
++	fg->dev = dev;
++	fg->full_permille = 1000;
++	fg->last_soc = 500;
++	i2c_set_clientdata(client, fg);
++
++	ret = devm_mutex_init(dev, &fg->lock);
++	if (ret)
++		return ret;
++
++	fg->regmap = devm_regmap_init_i2c(client, &sm5705_fg_regmap_config);
++	if (IS_ERR(fg->regmap))
++		return dev_err_probe(dev, PTR_ERR(fg->regmap),
++				     "failed to allocate regmap\n");
++
++	ret = regmap_read(fg->regmap, SM5705_FG_REG_DEVICE_ID, &id);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot read device ID\n");
++	dev_dbg(dev, "device ID %#x\n", id);
++
++	device_property_read_u32(dev, "siliconmitus,full-permille",
++				 &fg->full_permille);
++	if (!fg->full_permille || fg->full_permille > 1000)
++		return dev_err_probe(dev, -EINVAL,
++				     "siliconmitus,full-permille must be 1..1000\n");
++
++	ret = sm5705_fg_parse_params(fg);
++	if (ret)
++		return ret;
++
++	ret = sm5705_fg_init(fg);
++	if (ret)
++		return dev_err_probe(dev, ret, "gauge initialisation failed\n");
++
++	psy_cfg.fwnode = dev_fwnode(dev);
++	psy_cfg.drv_data = fg;
++
++	fg->psy = devm_power_supply_register(dev, &sm5705_fg_desc, &psy_cfg);
++	if (IS_ERR(fg->psy))
++		return dev_err_probe(dev, PTR_ERR(fg->psy),
++				     "failed to register power supply\n");
++
++	/* Optional "monitored-battery" with the design parameters */
++	ret = power_supply_get_battery_info(fg->psy, &fg->battery_info);
++	if (ret) {
++		fg->battery_info = NULL;
++	} else {
++		ret = devm_add_action_or_reset(dev, sm5705_fg_put_battery_info, fg);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static const struct of_device_id sm5705_fg_of_match[] = {
++	{ .compatible = "siliconmitus,sm5705-fuelgauge" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sm5705_fg_of_match);
++
++static const struct i2c_device_id sm5705_fg_id[] = {
++	{ "sm5705-fuelgauge" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, sm5705_fg_id);
++
++static struct i2c_driver sm5705_fg_driver = {
++	.driver = {
++		.name = "sm5705-fuelgauge",
++		.of_match_table = sm5705_fg_of_match,
++	},
++	.probe = sm5705_fg_probe,
++	.id_table = sm5705_fg_id,
++};
++module_i2c_driver(sm5705_fg_driver);
++
++MODULE_DESCRIPTION("Silicon Mitus SM5705 fuel gauge driver");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

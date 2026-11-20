@@ -1,346 +1,667 @@
 #!/usr/bin/python3
-# gta2srv settings: Wi-Fi, display + screensaver, file sharing, kiosk, power. Tabs; drag with a finger to scroll.
-#   gta2-settings [--power | --tab wifi|display|share|kiosk|power]
-import tkinter as tk, subprocess, glob, threading, json, os, sys
+# gta2srv Settings v2: category list -> detail pages. Drag with a finger to scroll; tap to act.
+#   gta2-settings [--power | --page <key>]
+# Root work goes through /usr/local/sbin/gta2-ctl (and gta2-share / gta2-reboot) with sudo -n.
+import tkinter as tk, subprocess, glob, threading, json, os, sys, time
 from gta2ui import *
 
 CFG = os.path.expanduser('~/.config/gta2'); os.makedirs(CFG, exist_ok=True)
 SS = CFG + '/screensaver.json'
 SHARE = '/userdata/gta2srv/share'
 SSDIR = SHARE + '/Screensaver'
+CTL = '/usr/local/sbin/gta2-ctl'
 
 
 def nm(*a):
     return sh(['sudo', '-n', 'nmcli'] + list(a), 40)
 
 
-def root_sh(*a):
-    return sh(['sudo', '-n'] + list(a), 40)
+def root_sh(*a, t=60):
+    return sh(['sudo', '-n'] + list(a), t)
+
+
+def ctl(*a, t=60):
+    return root_sh(CTL, *a, t=t)
+
+
+def kv(s):
+    return dict(x.split('=', 1) for x in s.split() if '=' in x)
 
 
 r = tk.Tk(className='gta2-settings'); r.title('gta2-settings'); r.configure(bg=BG); r.attributes('-fullscreen', True)
 install_drag(r)
-top = tk.Frame(r, bg=BG); top.pack(fill='x', pady=(10, 4))
-btn(top, '‹ Back', lambda: (keyboard(False), r.destroy())).pack(side='left', padx=10)
-lbl(top, 'Settings', font=(F, 24, 'bold')).pack(side='left', padx=16)
-btn(top, '⌨', lambda: keyboard(True), bg=CARD2).pack(side='right', padx=10)
-msg = tk.Label(r, font=(F, 14), bg=BG, fg=WARN, wraplength=760, justify='left', anchor='w'); msg.pack(fill='x', padx=14)
 
 
-def say(t):
-    msg.config(text=t)
-
-
-tabs = tk.Frame(r, bg=BG); tabs.pack(fill='x', padx=8, pady=4)
-holder = tk.Frame(r, bg=BG); holder.pack(fill='both', expand=True)
-pages, tbtn = {}, {}
-
-
-def show(name):
-    for n, p in pages.items():
-        p.pack_forget()
-        tbtn[n].configure(bg=ACC if n == name else CARD2)
-    pages[name].pack(fill='both', expand=True)
-
-
-for key, title in (('wifi', 'Wi-Fi'), ('display', 'Display'), ('share', 'Files'), ('kiosk', 'Kiosk'), ('power', 'Power')):
-    pages[key] = Page(holder)
-    tbtn[key] = btn(tabs, title, lambda k=key: show(k), bg=CARD2, font=(F, 15))
-    tbtn[key].pack(side='left', expand=True, fill='x', padx=3)
-
-# ---------------- Wi-Fi
-P = pages['wifi'].body
-s = section(P, 'NETWORKS  (drag to scroll, tap to select)')
-lf = tk.Frame(s, bg=CARD); lf.pack(fill='both', padx=8, pady=6)
-lb = tk.Listbox(lf, font=(MONO, 17), height=9, bg=CARD2, fg=FG, selectbackground=ACC, activestyle='none', bd=0,
-                highlightthickness=0, exportselection=0)
-lsb = tk.Scrollbar(lf, orient='vertical', command=lb.yview, width=34); lb.configure(yscrollcommand=lsb.set)
-lsb.pack(side='right', fill='y'); lb.pack(side='left', fill='both', expand=True)
-nets = []
-touch_list(lb, lambda i: say('selected %s' % nets[i][1]) if i < len(nets) else None)
-
-
-def scan():
-    say('scanning...')
-
+def bg(work, done=None):
+    """run work() in a thread, then done(result) on the Tk thread"""
     def w():
-        nm('dev', 'wifi', 'rescan')
-        out = nm('-t', '-f', 'IN-USE,SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list')
-        rows, seen = [], set()
-        for l in out.splitlines():
-            p = l.replace('\\:', '\0').split(':')
-            if len(p) < 4:
-                continue
-            u, s_, sig, sec = [x.replace('\0', ':') for x in p[:4]]
-            if not s_ or s_ in seen:
-                continue
-            seen.add(s_); rows.append((u == '*', s_, int(sig or 0), sec))
-        rows.sort(key=lambda x: (-x[0], -x[2]))
+        res = work()
+        if done:
+            r.after(0, lambda: done(res))
+    threading.Thread(target=w, daemon=True).start()
 
-        def ui():
+
+# ---------------- frame: app bar, pages, toast
+bar_ = tk.Frame(r, bg=BG); bar_.pack(fill='x')
+stack = tk.Frame(r, bg=BG); stack.pack(fill='both', expand=True)
+toast = tk.Label(r, font=(F, 14), bg=CARD2, fg=FG, wraplength=740, justify='left', anchor='w', padx=16, pady=10)
+_tid = [None]
+
+
+def say(t, col=None):
+    t = (t or '').strip()
+    if not t:
+        return
+    toast.config(text=t, fg=BAD if t.startswith('error') else (col or FG))
+    toast.place(relx=0.5, rely=1.0, y=-24, anchor='s', relwidth=0.94)
+    if _tid[0]:
+        r.after_cancel(_tid[0])
+    _tid[0] = r.after(5000, toast.place_forget)
+
+
+def run_say(*a, after=None, msg=None):
+    if msg:
+        say(msg, DIM)
+    bg(lambda: ctl(*a), lambda out: (say(out.splitlines()[-1] if out else 'done'), after and after(out)))
+
+
+PAGES = {}      # key -> (title, icon, color, sub, builder)
+built = {}      # key -> Page
+cur = ['home']
+
+
+def bar_for(title, back):
+    for w in bar_.winfo_children():
+        w.destroy()
+    header(bar_, title, back=back, right=[('⌨', lambda: keyboard(True))])
+
+
+def close():
+    keyboard(False); r.destroy()
+
+
+def open_page(key):
+    for p in built.values():
+        p.pack_forget()
+    if key not in built:
+        p = Page(stack); built[key] = p
+        if key == 'home':
+            build_home(p.body)
+        else:
+            PAGES[key][4](p.body)
+    cur[0] = key
+    built[key].pack(fill='both', expand=True); built[key].top()
+    if key == 'home':
+        bar_for('Settings', close)
+    else:
+        bar_for(PAGES[key][0], lambda: (keyboard(False), open_page('home')))
+
+
+def page(key, title, icon, color, sub):
+    def deco(fn):
+        PAGES[key] = (title, icon, color, sub, fn)
+        return fn
+    return deco
+
+
+GROUPS = [('Network', ['wifi', 'hotspot', 'vpn']),
+          ('Display', ['display', 'saver']),
+          ('Hardware', ['battery', 'cpu', 'bt']),
+          ('Server', ['files', 'docker', 'ssh', 'kiosk']),
+          ('System', ['time', 'device', 'update', 'power'])]
+
+
+class ListRow(tk.Canvas):
+    """one tappable row in the category list: colored icon, title, subtitle, chevron"""
+    H = 78
+
+    def __init__(self, master, key):
+        super().__init__(master, height=self.H, bg=CARD, highlightthickness=0, bd=0)
+        self.key = key
+        self.bind('<Configure>', lambda e: self.draw())
+        self.bind('<ButtonPress-1>', lambda e: self.draw(True))
+        self.bind('<ButtonRelease-1>', self.rel)
+
+    def draw(self, pressed=False):
+        self.delete('all')
+        t, ic, col, sub, _ = PAGES[self.key]
+        w = max(10, self.winfo_width())
+        if pressed:
+            self.create_rectangle(0, 0, w, self.H, fill=CARD2, width=0)
+        c = circle(48, col)
+        if c:
+            self.create_image(18, 15, image=c, anchor='nw')
+        glyph(self, 42, 39, ic, 20)
+        self.create_text(84, 27, text=t, fill=FG, font=(F, 16, 'bold'), anchor='w')
+        self.create_text(84, 53, text=sub, fill=DIM, font=(F, 12), anchor='w')
+        self.create_text(w - 26, 39, text='›', fill=FAINT, font=(F, 26))
+
+    def rel(self, e):
+        self.draw()
+        if not Drag.dragged:
+            open_page(self.key)
+
+
+def build_home(P):
+    for g, keys in GROUPS:
+        tk.Label(P, text=g.upper(), font=(F, 11, 'bold'), bg=BG, fg=ACC).pack(anchor='w', padx=28, pady=(14, 4))
+        card = tk.Frame(P, bg=CARD); card.pack(fill='x', padx=14)
+        for i, k in enumerate(keys):
+            if i:
+                tk.Frame(card, bg=LINE, height=1).pack(fill='x', padx=(84, 0))
+            ListRow(card, k).pack(fill='x')
+    host = sh('hostname'); ver = rd('/etc/gta2-version', 'Ubuntu Server Mini'); kern = sh('uname -r')
+    tk.Label(P, text='%s  ·  %s  ·  kernel %s' % (host, ver, kern), font=(F, 11), bg=BG, fg=FAINT).pack(pady=(18, 60))
+
+
+def buttons(p, items):
+    f = tk.Frame(p, bg=p.cget('bg')); f.pack(fill='x', padx=6, pady=(6, 4))
+    out = []
+    for t, c, *col in items:
+        b = RButton(f, t, c, bg=col[0] if col else ACC, h=50, width=10, font=(F, 14, 'bold'), parent_bg=f.cget('bg'))
+        b.pack(side='left', expand=True, fill='x', padx=4); out.append(b)
+    return out
+
+
+def info_label(p, mono=True):
+    l = tk.Label(p, font=(MONO if mono else F, 13), bg=p.cget('bg'), fg='#9fb3c8', justify='left', anchor='w')
+    l.pack(fill='x', padx=10, pady=(0, 6))
+    return l
+
+
+def confirm_btn(label, fn, col=BAD):
+    """returns a command that needs two taps"""
+    st = {'t': 0}
+
+    def c():
+        if time.time() - st['t'] < 4:
+            st['t'] = 0; fn()
+        else:
+            st['t'] = time.time(); say('tap "%s" again to confirm' % label, WARN)
+    return c
+
+
+# ================= Network
+@page('wifi', 'Wi-Fi', 'wifi', TILE[0], 'Networks, password, static IP')
+def p_wifi(P):
+    s = section(P, 'Networks', 'Drag to scroll, tap to select')
+    lf, lb = listbox(s, height=8, font=(F, 16)); lf.pack(fill='both', padx=6, pady=6)
+    nets = []
+    touch_list(lb, lambda i: say('selected ' + nets[i][1]) if i < len(nets) else None)
+
+    def scan():
+        say('scanning…', DIM)
+
+        def w():
+            nm('dev', 'wifi', 'rescan')
+            out = nm('-t', '-f', 'IN-USE,SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list')
+            rows, seen = [], set()
+            for l in out.splitlines():
+                p = l.replace('\\:', '\0').split(':')
+                if len(p) < 4:
+                    continue
+                u, s_, sig, sec = [x.replace('\0', ':') for x in p[:4]]
+                if not s_ or s_ in seen:
+                    continue
+                seen.add(s_); rows.append((u == '*', s_, int(sig or 0), sec))
+            rows.sort(key=lambda x: (-x[0], -x[2]))
+            return rows
+
+        def ui(rows):
             nets[:] = rows; lb.delete(0, 'end')
             for u, s_, sig, sec in rows:
                 bars = '▂▄▆█'[:max(1, min(4, sig // 25 + 1))]
-                lb.insert('end', '%s %-22s %-4s %s' % ('●' if u else ' ', s_[:22], bars, 'lock' if sec and sec != '--' else ''))
+                lb.insert('end', '  %s  %s   %s %s' % ('●' if u else '   ', s_[:26], bars, '⚷' if sec and sec != '--' else ''))
             say('%d networks' % len(rows))
-        r.after(0, ui)
-    threading.Thread(target=w, daemon=True).start()
+        bg(w, ui)
 
+    row(s, 'Password', lambda p: None)
+    pw = entry(s, show='•'); pw.pack(fill='x', padx=10, pady=(0, 6))
+    _, showpw = row(s, 'Show password', lambda p: Toggle(p, False, lambda v: pw.configure(show='' if v else '•')))
+    _, static = row(s, 'Static IP', lambda p: Toggle(p, False), 'Off = automatic (DHCP)')
+    st2 = tk.Frame(s, bg=CARD); st2.pack(fill='x', padx=6, pady=4)
+    ents = {}
+    for k, d in (('IP/len', '192.168.1.50/24'), ('Gateway', '192.168.1.1'), ('DNS', '1.1.1.1')):
+        f = tk.Frame(st2, bg=CARD); f.pack(side='left', expand=True, fill='x', padx=3)
+        lbl(f, k, fg=DIM, font=(F, 11)).pack(anchor='w')
+        e = entry(f, d, font=(F, 13), width=12); e.pack(fill='x'); ents[k] = e
 
-row = tk.Frame(s, bg=CARD); row.pack(fill='x', padx=8, pady=4)
-lbl(row, 'Password', bg=CARD).pack(side='left', padx=4)
-pw = entry(row, show='•'); pw.pack(side='left', fill='x', expand=True, padx=6)
-showpw = tk.BooleanVar(value=False)
-tk.Checkbutton(row, text='show', variable=showpw, command=lambda: pw.configure(show='' if showpw.get() else '•'), font=(F, 14),
-               bg=CARD, fg=FG, selectcolor=CARD2, activebackground=CARD).pack(side='left')
-mode = tk.StringVar(value='dhcp')
-st = tk.Frame(s, bg=CARD); st.pack(fill='x', padx=8, pady=4)
-for v, t in (('dhcp', 'DHCP'), ('static', 'Static IP')):
-    tk.Radiobutton(st, text=t, variable=mode, value=v, font=(F, 15), bg=CARD, fg=FG, selectcolor=CARD2,
-                   activebackground=CARD).pack(side='left', padx=6)
-st2 = tk.Frame(s, bg=CARD); st2.pack(fill='x', padx=8, pady=4)
-ents = {}
-for k, d in (('IP/len', '192.168.1.50/24'), ('Gateway', '192.168.1.1'), ('DNS', '1.1.1.1')):
-    f = tk.Frame(st2, bg=CARD); f.pack(side='left', expand=True, fill='x', padx=2)
-    lbl(f, k, bg=CARD, fg=DIM, font=(F, 12)).pack(anchor='w')
-    e = entry(f, d, font=(F, 14), width=12); e.pack(fill='x'); ents[k] = e
+    def sel():
+        i = lb.curselection()
+        return nets[i[0]][1] if i and i[0] < len(nets) else None
 
+    def connect():
+        s_ = sel()
+        if not s_:
+            return say('select a network first', WARN)
+        say('connecting to %s …' % s_, DIM)
 
-def sel():
-    i = lb.curselection()
-    return nets[i[0]][1] if i and i[0] < len(nets) else None
+        def w():
+            out = nm(*(['dev', 'wifi', 'connect', s_] + (['password', pw.get()] if pw.get() else [])))
+            if 'success' in out and static.get():
+                out += '\n' + nm('con', 'mod', s_, 'ipv4.method', 'manual', 'ipv4.addresses', ents['IP/len'].get(),
+                                 'ipv4.gateway', ents['Gateway'].get(), 'ipv4.dns', ents['DNS'].get()) + nm('con', 'up', s_)
+            elif 'success' in out:
+                nm('con', 'mod', s_, 'ipv4.method', 'auto', 'ipv4.addresses', '', 'ipv4.gateway', '', 'ipv4.dns', '')
+            return out
+        bg(w, lambda out: (say(out.splitlines()[-1] if out else '?'), scan(), keyboard(False)))
 
+    def forget():
+        s_ = sel()
+        if s_:
+            say(nm('con', 'delete', s_)); scan()
 
-def connect():
-    s_ = sel()
-    if not s_:
-        return say('select a network first')
-    say('connecting to %s ...' % s_)
-
-    def w():
-        out = nm(*(['dev', 'wifi', 'connect', s_] + (['password', pw.get()] if pw.get() else [])))
-        if 'success' in out and mode.get() == 'static':
-            out += '\n' + nm('con', 'mod', s_, 'ipv4.method', 'manual', 'ipv4.addresses', ents['IP/len'].get(),
-                             'ipv4.gateway', ents['Gateway'].get(), 'ipv4.dns', ents['DNS'].get()) + nm('con', 'up', s_)
-        elif 'success' in out:
-            nm('con', 'mod', s_, 'ipv4.method', 'auto', 'ipv4.addresses', '', 'ipv4.gateway', '', 'ipv4.dns', '')
-        r.after(0, lambda: (say(out[-300:]), scan(), keyboard(False)))
-    threading.Thread(target=w, daemon=True).start()
-
-
-def forget():
-    s_ = sel()
-    if s_:
-        say(nm('con', 'delete', s_)); scan()
-
-
-def wifi_toggle():
-    if getattr(wifi_toggle, 'armed', 0) < 1:
-        wifi_toggle.armed = 1
-        return say('tap Wi-Fi on/off again to confirm (USB ssh 10.15.19.82 keeps working)')
-    wifi_toggle.armed = 0
+    buttons(s, [('Scan', scan, CARD2), ('Connect', connect), ('Forget', forget, CARD2)])
+    s = section(P, 'Radio')
     on = 'enabled' in nm('radio', 'wifi')
-    say(nm('radio', 'wifi', 'off' if on else 'on') or ('Wi-Fi ' + ('off' if on else 'on')))
+    row(s, 'Wi-Fi', lambda p: Toggle(p, on, lambda v: say(nm('radio', 'wifi', 'on' if v else 'off') or 'Wi-Fi ' + ('on' if v else 'off'))),
+        'USB SSH (10.15.19.82) keeps working when off')
+    s = section(P, 'Status')
+    il = info_label(s)
+
+    def info():
+        if not il.winfo_exists():
+            return
+        ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{print $2\"  \"$4}'")
+        gw = sh("ip route | awk '/default/{print $3; exit}'")
+        dns = sh("awk '/^nameserver/{print $2}' /etc/resolv.conf | grep -v : | head -3 | tr '\\n' ' '")
+        il.config(text='%s\ngateway %s\ndns     %s' % (ips, gw, dns))
+        r.after(10000, info)
+    info(); scan()
 
 
-b = tk.Frame(s, bg=CARD); b.pack(fill='x', padx=6, pady=(4, 12))
-for t, c in (('Scan', scan), ('Connect', connect), ('Forget', forget), ('On/Off', wifi_toggle)):
-    btn(b, t, c).pack(side='left', expand=True, fill='x', padx=4)
-s = section(P, 'STATUS')
-il = tk.Label(s, font=(MONO, 14), bg=CARD, fg='#9fb3c8', justify='left', anchor='w'); il.pack(fill='x', padx=12, pady=(0, 12))
+@page('hotspot', 'Hotspot & USB tether', '⇅', TILE[2], 'Share the connection')
+def p_hotspot(P):
+    st = kv(ctl('hotspot', 'status'))
+    s = section(P, 'Wi-Fi hotspot', 'The tablet becomes an access point. Its own Wi-Fi client is off meanwhile.')
+    row(s, 'Network name', lambda p: None)
+    ss = entry(s, sh('hostname') + '-ap'); ss.pack(fill='x', padx=10, pady=(0, 6))
+    row(s, 'Password (8+ characters)', lambda p: None)
+    pw = entry(s, '', show='•'); pw.pack(fill='x', padx=10, pady=(0, 6))
+    buttons(s, [('Start hotspot', lambda: run_say('hotspot', 'on', ss.get(), pw.get(), msg='starting hotspot…')),
+                ('Stop', lambda: run_say('hotspot', 'off'), CARD2)])
+    s = section(P, 'USB tether', 'A laptop on the USB cable (10.15.19.x) gets internet through the tablet\'s Wi-Fi. '
+                'Set the laptop\'s gateway to 10.15.19.82.')
+    row(s, 'USB tether', lambda p: Toggle(p, st.get('tether') == 'on', lambda v: run_say('hotspot', 'tether-on' if v else 'tether-off')))
 
 
-def info():
-    ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{print $2\"  \"$4}'")
-    gw = sh("ip route | awk '/default/{print $3; exit}'")
-    dns = sh("awk '/^nameserver/{printf $2\" \"}' /etc/resolv.conf")
-    il.config(text='%s\ngateway %s\ndns     %s' % (ips, gw, dns))
-    r.after(10000, info)
+@page('vpn', 'VPN', 'vpn', TILE[1], 'Tailscale, WireGuard')
+def p_vpn(P):
+    s = section(P, 'Status'); il = info_label(s)
 
-# ---------------- Display + screensaver
-P = pages['display'].body
-s = section(P, 'BRIGHTNESS')
-BL = (glob.glob('/sys/class/backlight/*') or [''])[0]
-MX = int(rd(BL + '/max_brightness', '255'))
-sc = tk.Scale(s, from_=5, to=MX, orient='horizontal', font=(F, 14), bg=CARD, fg=FG, troughcolor=CARD2, highlightthickness=0,
-              width=34, sliderlength=60, bd=0,
-              command=lambda v: subprocess.call(['sudo', '-n', 'sh', '-c', 'echo %s > %s/brightness' % (v, BL)]))
-sc.set(int(rd(BL + '/brightness', '100'))); sc.pack(fill='x', padx=12, pady=(0, 12))
-
-s = section(P, 'ON-SCREEN KEYBOARD SIZE')
-kz = tk.Frame(s, bg=CARD); kz.pack(fill='x', padx=6, pady=(0, 12))
-def ksize(v):
-    open(CFG + '/osk_size', 'w').write(v); keyboard(False); r.after(600, lambda: keyboard(True)); say('keyboard size ' + v)
-for v, t in (('S', 'Small'), ('M', 'Medium'), ('L', 'Large')):
-    btn(kz, t, lambda v=v: ksize(v), bg=CARD2).pack(side='left', expand=True, fill='x', padx=4)
-
-cfg = {'enabled': False, 'after': 5, 'mode': 'image', 'image': '', 'interval': 15, 'clock': True, 'off_after': 0}
-try:
-    cfg.update(json.load(open(SS)))
-except Exception:
-    pass
-s = section(P, 'SCREENSAVER')
-ssv = {'enabled': tk.BooleanVar(value=cfg['enabled']), 'clock': tk.BooleanVar(value=cfg['clock']),
-       'mode': tk.StringVar(value=cfg['mode'])}
-tk.Checkbutton(s, text='Enable screensaver', variable=ssv['enabled'], font=(F, 16), bg=CARD, fg=FG, selectcolor=CARD2,
-               activebackground=CARD).pack(anchor='w', padx=10)
-rowm = tk.Frame(s, bg=CARD); rowm.pack(fill='x', padx=10, pady=4)
-for v, t in (('image', 'One image'), ('slideshow', 'Slideshow'), ('clock', 'Clock only')):
-    tk.Radiobutton(rowm, text=t, variable=ssv['mode'], value=v, font=(F, 15), bg=CARD, fg=FG, selectcolor=CARD2,
-                   activebackground=CARD).pack(side='left', padx=4)
-tk.Checkbutton(s, text='Show clock over the image', variable=ssv['clock'], font=(F, 15), bg=CARD, fg=FG, selectcolor=CARD2,
-               activebackground=CARD).pack(anchor='w', padx=10)
-spins = {}
-for k, t, lo, hi in (('after', 'Start after (min)', 1, 120), ('interval', 'Slideshow every (s)', 3, 600),
-                     ('off_after', 'Then screen off after (min, 0 = never)', 0, 600)):
-    f = tk.Frame(s, bg=CARD); f.pack(fill='x', padx=10, pady=3)
-    lbl(f, t, bg=CARD, font=(F, 15)).pack(side='left')
-    v = tk.IntVar(value=int(cfg[k]))
-    vl = lbl(f, str(v.get()), bg=CARD, font=(F, 16, 'bold'), width=4)
-    def bump(d, v=v, vl=vl, lo=lo, hi=hi):
-        v.set(max(lo, min(hi, v.get() + d))); vl.config(text=str(v.get()))
-    btn(f, '+', lambda b=bump: b(1), bg=CARD2, width=2).pack(side='right', padx=2)
-    vl.pack(side='right')
-    btn(f, '−', lambda b=bump: b(-1), bg=CARD2, width=2).pack(side='right', padx=2)
-    spins[k] = v
-lbl(s, 'Images: put .jpg/.png files in the "Screensaver" folder of the Files share\n(%s)' % SSDIR, bg=CARD, fg=DIM,
-    font=(F, 12), justify='left').pack(anchor='w', padx=10, pady=(6, 0))
-imf = tk.Frame(s, bg=CARD); imf.pack(fill='x', padx=8, pady=6)
-il2 = tk.Listbox(imf, font=(F, 15), height=5, bg=CARD2, fg=FG, selectbackground=ACC, activestyle='none', bd=0,
-                 highlightthickness=0, exportselection=0)
-isb = tk.Scrollbar(imf, orient='vertical', command=il2.yview, width=30); il2.configure(yscrollcommand=isb.set)
-isb.pack(side='right', fill='y'); il2.pack(side='left', fill='both', expand=True)
-imgs = []
+    def refresh(*_):
+        bg(lambda: ctl('vpn', 'status'), lambda o: il.config(text=o.replace(' tailscale=', '\ntailscale=')))
+    s = section(P, 'Tailscale', 'Reach the tablet from anywhere. "Sign in" shows a link: open it on your phone.')
+    buttons(s, [('Install', lambda: run_say('vpn', 'ts-install', after=refresh, msg='installing Tailscale (needs internet)…'), CARD2),
+                ('Sign in / up', lambda: run_say('vpn', 'ts-up', after=refresh, msg='starting Tailscale…')),
+                ('Down', lambda: run_say('vpn', 'ts-down', after=refresh), CARD2)])
+    s = section(P, 'WireGuard', 'Copy your wg0.conf into the Files share, then tap Up.')
+    buttons(s, [('Install', lambda: run_say('vpn', 'wg-install', msg='installing wireguard-tools…'), CARD2),
+                ('Up', lambda: run_say('vpn', 'wg-up', after=refresh)),
+                ('Down', lambda: run_say('vpn', 'wg-down', after=refresh), CARD2)])
+    refresh()
 
 
-def load_imgs():
-    imgs[:] = sorted(p for p in glob.glob(SSDIR + '/*') if p.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')))
-    il2.delete(0, 'end')
-    for p in imgs:
-        il2.insert('end', ('✓ ' if p == cfg.get('image') else '   ') + os.path.basename(p))
-    if not imgs:
-        il2.insert('end', '   (no images yet: copy some into the share)')
+# ================= Display
+@page('display', 'Display', '☀', TILE[4], 'Brightness, rotation, timeout, keyboard')
+def p_display(P):
+    s = section(P, 'Brightness')
+    BL = (glob.glob('/sys/class/backlight/*') or [''])[0]
+    MX = int(rd(BL + '/max_brightness', '255'))
+    Slider(s, max(1, MX // 50), MX, int(rd(BL + '/brightness', str(MX // 2))),
+           lambda v: subprocess.call(['sudo', '-n', 'sh', '-c', 'echo %s > %s/brightness' % (v, BL)])).pack(fill='x', padx=12, pady=(6, 12))
+
+    s = section(P, 'Rotation', 'Restarts the interface to apply')
+    rot = rd('/etc/gta2/rotation', 'portrait')
+    Choice(s, [('portrait', 'Portrait'), ('portrait-flip', 'Upside'), ('landscape', 'Landscape'), ('landscape-flip', 'Land. flip')],
+           rot, lambda v: run_say('screen', 'rotation', v, msg='rotating…')).pack(fill='x', padx=6, pady=(4, 10))
+
+    c = load_ss()
+    s = section(P, 'Screen timeout', 'Turn the backlight off when idle (if the screensaver is off). Power key wakes it.')
+
+    def sto(v):
+        c2 = load_ss(); c2['screen_off'] = v; json.dump(c2, open(SS, 'w'))
+    row(s, 'Minutes (0 = never)', lambda p: Stepper(p, int(c.get('screen_off', 0)), 0, 120, 1, '%d', sto))
+
+    s = section(P, 'On-screen keyboard')
+
+    def ksize(v):
+        open(CFG + '/osk_size', 'w').write(v); keyboard(False); r.after(700, lambda: keyboard(True)); say('keyboard size ' + v)
+    Choice(s, [('S', 'Small'), ('M', 'Medium'), ('L', 'Large')], rd(CFG + '/osk_size', 'M'), ksize).pack(fill='x', padx=6, pady=(4, 10))
 
 
-def pick(i):
-    if i < len(imgs):
-        cfg['image'] = imgs[i]; load_imgs(); say('image: ' + os.path.basename(imgs[i]))
+def load_ss():
+    c = {'enabled': False, 'after': 5, 'mode': 'image', 'image': '', 'interval': 15, 'clock': True, 'off_after': 0, 'screen_off': 0}
+    try:
+        c.update(json.load(open(SS)))
+    except Exception:
+        pass
+    return c
 
 
-touch_list(il2, pick)
+@page('saver', 'Screensaver', '◐', TILE[5], 'Your photos, slideshow, clock')
+def p_saver(P):
+    cfg = load_ss()
+
+    def save(k, v):
+        c = load_ss(); c[k] = v; json.dump(c, open(SS, 'w')); cfg[k] = v
+    s = section(P, 'Screensaver')
+    row(s, 'Enabled', lambda p: Toggle(p, cfg['enabled'], lambda v: save('enabled', v)))
+    Choice(s, [('image', 'One image'), ('slideshow', 'Slideshow'), ('clock', 'Clock only')], cfg['mode'],
+           lambda v: save('mode', v)).pack(fill='x', padx=6, pady=6)
+    row(s, 'Clock over the image', lambda p: Toggle(p, cfg['clock'], lambda v: save('clock', v)))
+    row(s, 'Start after (min)', lambda p: Stepper(p, int(cfg['after']), 1, 120, 1, '%d', lambda v: save('after', v)))
+    row(s, 'Slideshow every (s)', lambda p: Stepper(p, int(cfg['interval']), 3, 600, 5, '%d', lambda v: save('interval', v)))
+    row(s, 'Then screen off (min)', lambda p: Stepper(p, int(cfg['off_after']), 0, 600, 5, '%d', lambda v: save('off_after', v)), '0 = never')
+    s = section(P, 'Images', 'Copy .jpg/.png into the "Screensaver" folder of the Files share. Tap one to use it.')
+    lf, il2 = listbox(s, height=5, font=(F, 14)); lf.pack(fill='both', padx=6, pady=6)
+    imgs = []
+
+    def load_imgs():
+        imgs[:] = sorted(p for p in glob.glob(SSDIR + '/*') if p.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')))
+        il2.delete(0, 'end')
+        for p in imgs:
+            il2.insert('end', ('  ✓ ' if p == cfg.get('image') else '     ') + os.path.basename(p))
+        if not imgs:
+            il2.insert('end', '   (no images yet)')
+
+    def pick(i):
+        if i < len(imgs):
+            save('image', imgs[i]); load_imgs(); say('image: ' + os.path.basename(imgs[i]))
+    touch_list(il2, pick)
+
+    def preview():
+        open(CFG + '/screensaver_now', 'w').write('1'); say('showing the screensaver (tap to close)'); r.after(300, close)
+    buttons(s, [('Preview', preview), ('Reload', load_imgs, CARD2)])
+    load_imgs()
 
 
-def ss_save(test=False):
-    cfg.update({'enabled': ssv['enabled'].get(), 'clock': ssv['clock'].get(), 'mode': ssv['mode'].get()})
-    for k, v in spins.items():
-        cfg[k] = v.get()
-    json.dump(cfg, open(SS, 'w'))
-    if test:
-        open(CFG + '/screensaver_now', 'w').write('1')
-        say('screensaver saved, showing it now (tap to close)')
-        r.after(300, r.destroy)
+# ================= Hardware
+def psy():
+    """battery facts from whichever power_supply nodes exist (3.18 sec-battery or mainline sm5705)"""
+    d = {}
+    for n in glob.glob('/sys/class/power_supply/*'):
+        t = rd(n + '/type', '')
+        if t == 'Battery' or 'fuel' in n or n.endswith('/battery'):
+            for k in ('capacity', 'status', 'voltage_now', 'current_now', 'temp', 'health', 'charge_full', 'charge_full_design'):
+                v = rd(n + '/' + k, '')
+                if v and k not in d:
+                    d[k] = v
+        if rd(n + '/online', '0') == '1' and t in ('Mains', 'USB', 'USB_PD', 'Wireless'):
+            d['source'] = t
+    return d
+
+
+@page('battery', 'Battery & charging', '▮', TILE[3], 'Health, charge, charge limit')
+def p_battery(P):
+    s = section(P, 'Battery'); il = info_label(s, mono=False)
+    b = bar(s, 680, 14); b.pack(fill='x', padx=12, pady=(0, 12))
+
+    def tick():
+        if not il.winfo_exists():
+            return
+        d = psy()
+        cap = int(d.get('capacity', '0') or 0)
+        v = int(d.get('voltage_now', '0') or 0); v = v / 1e6 if v > 10000 else v / 1000
+        cur_ = int(d.get('current_now', '0') or 0); cur_ = cur_ / 1000 if abs(cur_) > 10000 else cur_
+        tmp = int(d.get('temp', '0') or 0) / 10
+        t = '%d%%   %s%s\n%.2f V   %+d mA   %.1f °C   health %s' % (
+            cap, d.get('status', '?'), ('  (%s)' % d['source']) if 'source' in d else '', v, cur_, tmp, d.get('health', '?'))
+        if d.get('charge_full') and d.get('charge_full_design'):
+            t += '\nwear: %d%% of design' % (100 * int(d['charge_full']) // max(1, int(d['charge_full_design'])))
+        il.config(text=t); b.set(cap / 100, OK if cap > 20 else BAD)
+        r.after(4000, tick)
+    tick()
+    s = section(P, 'Charge limit', 'For a tablet that stays plugged in 24/7: stop charging at this level and resume 5% below. '
+                'Keeps the battery from swelling.')
+    lim = int(rd('/etc/gta2/charge_limit', '100') or 100)
+    deb = {'j': None}
+
+    def setlim(v):  # wait until the taps stop, then apply once
+        if deb['j']:
+            r.after_cancel(deb['j'])
+        deb['j'] = r.after(1200, lambda: run_say('battery', 'limit', str(v), after=lambda o: bg(lambda: ctl('battery', 'status'), lambda o2: il2.config(text=o2))))
+    row(s, 'Stop at (%)', lambda p: Stepper(p, lim, 50, 100, 5, '%d', setlim), '100 = normal charging')
+    il2 = info_label(s, mono=False)
+    bg(lambda: ctl('battery', 'status'), lambda o: il2.config(text=o))
+
+
+@page('cpu', 'CPU & thermal', '⚙', TILE[7], 'Speed profile, throttle temperature')
+def p_cpu(P):
+    st = kv(ctl('cpu', 'status'))
+    s = section(P, 'Now'); il = info_label(s)
+
+    def tick():
+        if not il.winfo_exists():
+            return
+        fr = [rd('/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq' % i, '0') for i in range(8)]
+        temps = []
+        for z in glob.glob('/sys/class/thermal/thermal_zone*'):
+            ty = rd(z + '/type', '')
+            if 'fuel' in ty or 'batt' in ty:
+                continue
+            try:
+                temps.append('%s %.0f°C' % (ty[:12], int(rd(z + '/temp', '0')) / 1000))
+            except ValueError:
+                pass
+        mhz = [int(f) // 1000 for f in fr if f.isdigit() and int(f) > 0]
+        il.config(text=('MHz  ' + ' '.join(map(str, mhz)) + '\n' if mhz else '') + '   '.join(temps[:4]))
+        r.after(2000, tick)
+    tick()
+    if st.get('gov', 'none') == 'none':
+        s = section(P, 'Speed', 'This kernel runs the CPU at a fixed clock (no frequency scaling yet).')
     else:
-        say('screensaver saved' + ('' if cfg['enabled'] else ' (disabled)'))
+        s = section(P, 'Speed profile')
+        Choice(s, [('powersave', 'Saver'), ('schedutil', 'Balanced'), ('performance', 'Max')], st.get('gov'),
+               lambda v: run_say('cpu', 'gov', v)).pack(fill='x', padx=6, pady=6)
+        s = section(P, 'Top speed', 'Stock 1586 MHz. 1.8 GHz: overclock, stress-tested on all 8 cores (default). '
+                    'Throttles at the temperature below.')
+        top = int(st.get('top', '0') or 0)
+        opts = [(f, t) for f, t in ((1248000, 'Saver'), (1586000, 'Stock'), (1690000, '1.7 GHz'), (1794000, '1.8 GHz'))
+                if f <= max(top, 1586000)]
+        cap = int(st.get('cap', '0') or 0) or opts[-1][0]
+        Choice(s, opts, cap, lambda v: run_say('cpu', 'max', str(v))).pack(fill='x', padx=6, pady=6)
+    s = section(P, 'Throttle', 'Above this temperature the clock steps down until it cools.')
+    row(s, 'Throttle at (°C)', lambda p: Stepper(p, int(st.get('trip', '90')), 60, 95, 5, '%d', lambda v: run_say('cpu', 'trip', str(v))))
 
 
-bb = tk.Frame(s, bg=CARD); bb.pack(fill='x', padx=6, pady=(4, 12))
-btn(bb, 'Save', ss_save).pack(side='left', expand=True, fill='x', padx=4)
-btn(bb, 'Preview', lambda: ss_save(True)).pack(side='left', expand=True, fill='x', padx=4)
-btn(bb, 'Reload images', load_imgs, bg=CARD2).pack(side='left', expand=True, fill='x', padx=4)
+@page('bt', 'Bluetooth', 'bt', TILE[0], 'Keyboards, mice, speakers')
+def p_bt(P):
+    s = section(P, 'Bluetooth')
+    il = info_label(s)
+    devs = []
 
-# ---------------- Files (sharing)
-P = pages['share'].body
-s = section(P, 'FILE SHARING')
-shl = tk.Label(s, font=(MONO, 14), bg=CARD, fg='#9fb3c8', justify='left', anchor='w'); shl.pack(fill='x', padx=12, pady=(0, 8))
+    def refresh(*_):
+        bg(lambda: ctl('bt', 'status'), lambda o: il.config(text=o))
+    row(s, 'Bluetooth', lambda p: Toggle(p, 'Powered: yes' in ctl('bt', 'status'), lambda v: run_say('bt', 'power', 'on' if v else 'off', after=refresh)))
+    s = section(P, 'Devices', 'Put the device in pairing mode, Scan, tap it, then Pair')
+    lf, lb = listbox(s, height=6, font=(F, 14)); lf.pack(fill='both', padx=6, pady=6)
+    touch_list(lb)
+
+    def fill(o):
+        devs[:] = [l.split(' ', 2)[1:] for l in o.splitlines() if l.startswith('Device ')]
+        lb.delete(0, 'end')
+        for mac, *name in devs:
+            lb.insert('end', '  ' + (name[0] if name else mac))
+        say('%d devices' % len(devs))
+
+    def selm():
+        i = lb.curselection()
+        return devs[i[0]][0] if i and i[0] < len(devs) else None
+    buttons(s, [('Scan', lambda: (say('scanning 10 s…', DIM), bg(lambda: ctl('bt', 'scan', t=30), fill))),
+                ('Pair', lambda: selm() and run_say('bt', 'pair', selm(), after=refresh, msg='pairing…')),
+                ('Remove', lambda: selm() and run_say('bt', 'remove', selm(), after=refresh), CARD2)])
+    refresh()
 
 
-def share_info():
-    st_ = dict(l.split('=', 1) for l in root_sh('/usr/local/sbin/gta2-share', 'status').splitlines() if '=' in l)
+# ================= Server
+@page('files', 'Files & sharing', '⇄', TILE[2], 'SMB network share, SFTP')
+def p_files(P):
+    s = section(P, 'Share'); shl = info_label(s)
+
+    def share_info(*_):
+        st_ = dict(l.split('=', 1) for l in root_sh('/usr/local/sbin/gta2-share', 'status').splitlines() if '=' in l)
+        ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{split($4,a,\"/\"); print a[1]}'").split()
+        t = ''.join('\\\\%s\\share\n' % ip for ip in ips)
+        t += 'sftp://gta2@%s\nfolder: %s\nfree:   %s' % (ips[0] if ips else '<ip>', SHARE, sh("df -h /userdata | awk 'NR==2{print $4}'"))
+        shl.config(text=t)
+        return st_
+    st_ = share_info()
+    row(s, 'Windows / Mac share (SMB)', lambda p: Toggle(p, st_.get('smb') in ('on', 'active'), lambda v: (
+        say(root_sh('/usr/local/sbin/gta2-share', 'smb', 'on' if v else 'off') or 'SMB ' + ('on' if v else 'off')), share_info())))
+    row(s, 'Guest access (no password)', lambda p: Toggle(p, st_.get('guest') in ('on', 'active'), lambda v: (
+        say(root_sh('/usr/local/sbin/gta2-share', 'guest', 'on' if v else 'off') or 'guest ' + ('on' if v else 'off')), share_info())),
+        'Windows 11 blocks guest shares by default')
+    s = section(P, 'Share password', 'User gta2. Default password gta2: change it.')
+    spw = entry(s, show='•'); spw.pack(fill='x', padx=10, pady=4)
+
+    def setpw():
+        if len(spw.get()) < 4:
+            return say('password: at least 4 characters', WARN)
+        say('SMB password ' + (root_sh('/usr/local/sbin/gta2-share', 'passwd', spw.get()) or 'set')); spw.delete(0, 'end'); keyboard(False)
+    buttons(s, [('Set password', setpw)])
+    s = section(P, 'Folders')
+    lbl(s, 'Screensaver/   images for the screensaver\nDownloads/      anything else\n~/Share in the terminal is the same folder',
+        fg='#9fb3c8', font=(MONO, 12), justify='left').pack(anchor='w', padx=12, pady=(0, 10))
+
+
+@page('docker', 'Docker', 'docker', TILE[0], 'Containers, autostart, cleanup')
+def p_docker(P):
+    s = section(P, 'Containers', 'Tap a container, then an action')
+    lf, lb = listbox(s, height=7, font=(MONO, 14)); lf.pack(fill='both', padx=6, pady=6)
+    touch_list(lb)
+    cs = []
+
+    def refresh(*_):
+        def ui(o):
+            cs[:] = [l.split('|') for l in o.splitlines() if l.count('|') >= 3]
+            lb.delete(0, 'end')
+            for n, stt, status, img in cs:
+                lb.insert('end', ' %s %-18s %s' % ('●' if stt == 'running' else '○', n[:18], status[:22]))
+            if not cs:
+                lb.insert('end', '  (no containers, or Docker is stopped)')
+        bg(lambda: ctl('docker', 'list'), ui)
+
+    def act(a, *x):
+        i = lb.curselection()
+        if not i or i[0] >= len(cs):
+            return say('tap a container first', WARN)
+        run_say('docker', a, cs[i[0]][0], *x, after=refresh, msg='%s %s…' % (a, cs[i[0]][0]))
+    buttons(s, [('Start', lambda: act('start')), ('Stop', lambda: act('stop'), CARD2), ('Restart', lambda: act('restart'), CARD2)])
+    buttons(s, [('Autostart on', lambda: act('autostart', 'on'), CARD2), ('Autostart off', lambda: act('autostart', 'off'), CARD2),
+                ('Refresh', refresh, CARD2)])
+    s = section(P, 'Docker service', 'Stop Docker to free ~100 MB of RAM when you do not need it')
+    buttons(s, [('Start', lambda: run_say('docker', 'service', 'start', after=refresh, msg='starting Docker…')),
+                ('Stop', lambda: run_say('docker', 'service', 'stop', after=refresh), CARD2),
+                ('Clean up', confirm_btn('Clean up', lambda: run_say('docker', 'prune', after=refresh, msg='cleaning…')), CARD2)])
+    buttons(s, [('Open Portainer', lambda: (close(), subprocess.Popen(['gta2-docker'], start_new_session=True)), TILE[1])])
+    refresh()
+
+
+@page('ssh', 'SSH access', '>_', TILE[6], 'Remote terminal, keys')
+def p_ssh(P):
+    st = kv(ctl('ssh', 'status'))
     ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{split($4,a,\"/\"); print a[1]}'").split()
-    t = 'SMB (Windows/Mac/Linux): %s   guest: %s\n' % (st_.get('smb', '?'), st_.get('guest', '?'))
-    for ip in ips:
-        t += '  \\\\%s\\share\n' % ip
-    t += 'SFTP (WinSCP/FileZilla): sftp://gta2@%s\n' % (ips[0] if ips else '<ip>')
-    t += 'USB cable: same addresses via 10.15.19.82\n'
-    t += 'folder on the tablet: %s\nfree: %s' % (SHARE, sh("df -h /userdata | awk 'NR==2{print $4}'"))
-    shl.config(text=t)
+    s = section(P, 'SSH', 'ssh gta2@' + (ips[0] if ips else '<ip>'))
+    row(s, 'SSH server', lambda p: Toggle(p, st.get('ssh') == 'active', confirm_toggle('ssh', ('on', 'off'))),
+        'Turning it off also stops remote fixes over USB')
+    row(s, 'Password login', lambda p: Toggle(p, st.get('password') == 'on', lambda v: run_say('ssh', 'password', 'on' if v else 'off')),
+        'Off = keys only (safer)')
+    s = section(P, 'Keys', '%s key(s) installed. To add one: copy your public key into the Files share as authorized_keys.txt, '
+                'then tap Add key.' % st.get('keys', '0'))
+    buttons(s, [('Add key', lambda: run_say('ssh', 'addkey'))])
 
 
-def smb(on):
-    say(root_sh('/usr/local/sbin/gta2-share', 'smb', 'on' if on else 'off') or 'SMB ' + ('on' if on else 'off')); share_info()
+def confirm_toggle(area, vals):
+    def f(v):
+        if not v:
+            say('SSH off: you can turn it back on here', WARN)
+        run_say(area, vals[0] if v else vals[1])
+    return f
 
 
-def guest(on):
-    say(root_sh('/usr/local/sbin/gta2-share', 'guest', 'on' if on else 'off') or 'guest ' + ('on' if on else 'off')); share_info()
+@page('kiosk', 'Kiosk', '▣', TILE[5], 'One web page, full screen')
+def p_kiosk(P):
+    KU = CFG + '/kiosk_url'; KA = CFG + '/kiosk_autostart'
+    s = section(P, 'Page', 'Full screen web page. The Home key returns.')
+    ku = entry(s, rd(KU, 'http://localhost:8088') or 'http://localhost:8088'); ku.pack(fill='x', padx=10, pady=6)
+    Choice(s, [('http://localhost:8088', 'Dashboard'), ('https://127.0.0.1:9443', 'Portainer'), ('http://pi.hole/admin', 'Pi-hole')],
+           None, lambda u: (ku.delete(0, 'end'), ku.insert(0, u))).pack(fill='x', padx=6, pady=4)
+
+    def save():
+        open(KU, 'w').write(ku.get().strip()); say('kiosk saved')
+    row(s, 'Start at boot', lambda p: Toggle(p, os.path.exists(KA), lambda v: (open(KA, 'w').write('1') if v else (os.path.exists(KA) and os.remove(KA)))))
+    buttons(s, [('Save', save, CARD2), ('Open now', lambda: (save(), close(), subprocess.Popen(['gta2-kiosk'], start_new_session=True)))])
 
 
-sb1 = tk.Frame(s, bg=CARD); sb1.pack(fill='x', padx=6, pady=4)
-btn(sb1, 'SMB on', lambda: smb(True)).pack(side='left', expand=True, fill='x', padx=4)
-btn(sb1, 'SMB off', lambda: smb(False), bg=CARD2).pack(side='left', expand=True, fill='x', padx=4)
-btn(sb1, 'Guest on', lambda: guest(True), bg=CARD2).pack(side='left', expand=True, fill='x', padx=4)
-btn(sb1, 'Guest off', lambda: guest(False), bg=CARD2).pack(side='left', expand=True, fill='x', padx=4)
-lbl(s, 'Login: user gta2. Default password gta2, change it here.\nGuest = no password (Windows 11 blocks guest by default).',
-    bg=CARD, fg=DIM, font=(F, 12), justify='left').pack(anchor='w', padx=10, pady=4)
-pr = tk.Frame(s, bg=CARD); pr.pack(fill='x', padx=8, pady=(4, 12))
-spw = entry(pr, show='•'); spw.pack(side='left', fill='x', expand=True, padx=4)
+# ================= System
+@page('time', 'Date & time', '◷', TILE[1], 'Time zone, network time')
+def p_time(P):
+    st = kv(ctl('time', 'status'))
+    s = section(P, 'Clock'); il = info_label(s)
+
+    def tick():
+        if il.winfo_exists():
+            il.config(text=time.strftime('%A %d %B %Y   %H:%M:%S') + '\nzone ' + st.get('tz', '?')); r.after(1000, tick)
+    tick()
+    row(s, 'Network time (NTP)', lambda p: Toggle(p, st.get('ntp') == 'yes', lambda v: run_say('time', 'ntp', 'true' if v else 'false')))
+    s = section(P, 'Time zone', 'Drag to scroll, tap to set')
+    lf, lb = listbox(s, height=9, font=(F, 14)); lf.pack(fill='both', padx=6, pady=6)
+    zones = [z for z in ctl('time', 'zones').splitlines() if '/' in z or z == 'UTC']
+
+    def pick(i):
+        if i < len(zones):
+            st['tz'] = zones[i]; run_say('time', 'tz', zones[i])
+    touch_list(lb, pick)
+    for z in zones:
+        lb.insert('end', '  ' + z)
+    if st.get('tz') in zones:
+        i = zones.index(st['tz']); lb.see(i); lb.selection_set(i)
 
 
-def setpw():
-    if len(spw.get()) < 4:
-        return say('password: at least 4 characters')
-    say('SMB password ' + (root_sh('/usr/local/sbin/gta2-share', 'passwd', spw.get()) or 'set')); spw.delete(0, 'end'); keyboard(False)
+@page('device', 'Device', '◉', TILE[6], 'Name, login password')
+def p_device(P):
+    s = section(P, 'Device name', 'Shown on the network (\\\\name\\share, ssh gta2@name.local)')
+    hn = entry(s, sh('hostname')); hn.pack(fill='x', padx=10, pady=6)
+    buttons(s, [('Rename', lambda: (keyboard(False), run_say('device', 'hostname', hn.get().strip())))])
+    s = section(P, 'Login password', 'Password of user gta2 (SSH, sudo prompt, console). Default gta2.')
+    p1 = entry(s, show='•'); p1.pack(fill='x', padx=10, pady=4)
+    p2 = entry(s, show='•'); p2.pack(fill='x', padx=10, pady=4)
+
+    def setpw():
+        if p1.get() != p2.get():
+            return say('the two passwords differ', WARN)
+        run_say('device', 'passwd', p1.get()); p1.delete(0, 'end'); p2.delete(0, 'end'); keyboard(False)
+    buttons(s, [('Change password', setpw)])
+    s = section(P, 'About'); il = info_label(s)
+    il.config(text=sh("printf '%s\\n' \"$(. /etc/os-release; echo $PRETTY_NAME)\" \"kernel $(uname -r)\" "
+                      "\"RAM $(free -m | awk '/Mem/{print $2}') MB\" \"$(cat /etc/gta2-version 2>/dev/null)\""))
 
 
-btn(pr, 'Set password', setpw).pack(side='left', padx=4)
-s = section(P, 'FOLDERS')
-lbl(s, 'Screensaver/  images for the screensaver\nDownloads/    anything else\n'
-       'In the terminal: ~/Share is the same folder.', bg=CARD, fg='#9fb3c8', font=(MONO, 13), justify='left').pack(anchor='w', padx=12, pady=(0, 12))
-
-# ---------------- Kiosk
-P = pages['kiosk'].body
-s = section(P, 'KIOSK PAGE  (full screen web page, HOME returns)')
-KU = CFG + '/kiosk_url'; KA = CFG + '/kiosk_autostart'
-ku = entry(s, rd(KU, 'http://localhost:8088') or 'http://localhost:8088'); ku.pack(fill='x', padx=10, pady=6)
-qk = tk.Frame(s, bg=CARD); qk.pack(fill='x', padx=6)
-for t, u in (('Dashboard', 'http://localhost:8088'), ('Portainer', 'https://127.0.0.1:9443'), ('Pi-hole', 'http://pi.hole/admin')):
-    btn(qk, t, lambda u=u: (ku.delete(0, 'end'), ku.insert(0, u)), bg=CARD2, font=(F, 14)).pack(side='left', expand=True, fill='x', padx=3)
-ka = tk.BooleanVar(value=os.path.exists(KA))
+@page('update', 'Updates & cleanup', '↻', TILE[3], 'Ubuntu updates, free space')
+def p_update(P):
+    s = section(P, 'Updates', 'Ubuntu security and bug-fix updates (needs internet, can take a while)')
+    il = info_label(s)
+    il.config(text=sh("df -h / /userdata | awk 'NR>1{print $6\"  \"$4\" free of \"$2}'"))
+    buttons(s, [('Check', lambda: run_say('update', 'check', msg='checking…')),
+                ('Install', confirm_btn('Install', lambda: run_say('update', 'run', msg='updating, keep the tablet plugged in…')), CARD2)])
+    s = section(P, 'Cleanup', 'Removes package cache, old logs and unused Docker images')
+    buttons(s, [('Clean up', lambda: run_say('update', 'clean', after=lambda o: il.config(
+        text=sh("df -h / /userdata | awk 'NR>1{print $6\"  \"$4\" free of \"$2}'")), msg='cleaning…'))])
 
 
-def ksave():
-    open(KU, 'w').write(ku.get().strip())
-    if ka.get():
-        open(KA, 'w').write('1')
-    elif os.path.exists(KA):
-        os.remove(KA)
-    say('kiosk saved' + (' (starts at boot)' if ka.get() else ''))
+@page('power', 'Power', 'power', TILE[7], 'Reboot, shut down, recovery')
+def p_power(P):
+    s = section(P, 'Power', 'Tap twice to confirm')
+    g = tk.Frame(s, bg=CARD); g.pack(fill='x', padx=4, pady=6)
+    for i, (t, m, col) in enumerate((('Reboot', 'system', ACC), ('Shut down', 'poweroff', BAD),
+                                     ('TWRP recovery', 'recovery', CARD2), ('Download mode', 'download', CARD2))):
+        b = RButton(g, t, confirm_btn(t, lambda m=m, t=t: (say(t + '…'), subprocess.Popen(['sudo', '-n', '/usr/local/sbin/gta2-reboot', m]))),
+                    bg=col, h=96, r=18, font=(F, 17, 'bold'), parent_bg=CARD)
+        b.grid(row=i // 2, column=i % 2, sticky='nsew', padx=5, pady=5)
+        g.columnconfigure(i % 2, weight=1)
 
 
-kr = tk.Frame(s, bg=CARD); kr.pack(fill='x', padx=6, pady=(6, 12))
-tk.Checkbutton(kr, text='start at boot', variable=ka, font=(F, 15), bg=CARD, fg=FG, selectcolor=CARD2,
-               activebackground=CARD).pack(side='left', padx=6)
-btn(kr, 'Save', ksave).pack(side='left', expand=True, fill='x', padx=4)
-btn(kr, 'Open', lambda: (ksave(), keyboard(False), subprocess.Popen(['gta2-kiosk'], start_new_session=True))).pack(
-    side='left', expand=True, fill='x', padx=4)
-
-# ---------------- Power
-P = pages['power'].body
-s = section(P, 'POWER  (tap twice to confirm)')
-pf = tk.Frame(s, bg=CARD); pf.pack(fill='x', padx=6, pady=(4, 12))
-
-
-def confirm(t, m):
-    if getattr(confirm, 'armed', None) == t:
-        subprocess.Popen(['sudo', '-n', '/usr/local/sbin/gta2-reboot', m]); return say(t + '...')
-    confirm.armed = t; say('tap "%s" again to confirm' % t)
-
-
-for i, (t, m) in enumerate((('Reboot', 'system'), ('Shut down', 'poweroff'), ('TWRP recovery', 'recovery'), ('Download mode', 'download'))):
-    tk.Button(pf, text=t, font=(F, 18), bg='#8e1519', fg='white', relief='flat', bd=0, height=3,
-              command=lambda t=t, m=m: None if Drag.dragged else confirm(t, m)).grid(row=i // 2, column=i % 2, sticky='nsew', padx=5, pady=5)
-    pf.columnconfigure(i % 2, weight=1)
-
-first = 'power' if '--power' in sys.argv else (sys.argv[sys.argv.index('--tab') + 1] if '--tab' in sys.argv else 'wifi')
-show(first if first in pages else 'wifi')
-info(); load_imgs(); share_info(); scan()
+first = 'power' if '--power' in sys.argv else next((sys.argv[i + 1] for i, a in enumerate(sys.argv[:-1]) if a in ('--page', '--tab')), 'home')
+open_page({'share': 'files'}.get(first, first) if {'share': 'files'}.get(first, first) in PAGES else 'home')
 r.mainloop()

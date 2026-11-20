@@ -1,0 +1,14 @@
+[Unit]
+Description=gta2: web panel (exits after 10 min idle; the socket restarts it on demand)
+Requires=gta2-panel.socket
+After=gta2-panel.socket
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/gta2-panel
+Restart=on-failure
+RestartSec=5
+Nice=5
+MemoryMax=160M
+RuntimeDirectory=gta2-panel
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0700

@@ -1,0 +1,44 @@
+From 6b113ae93f6b01eab755d91688ad17b4cd00e3e6 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:29:02 +0300
+Subject: [PATCH 05/21] drm/exynos: remove conflicting firmware framebuffers
+
+Kick out simple-framebuffer/simpledrm set up from the bootloader splash
+before binding the DECON/DSI pipeline, so fbcon moves to exynos-drm.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ drivers/gpu/drm/exynos/exynos_drm_drv.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/gpu/drm/exynos/exynos_drm_drv.c b/drivers/gpu/drm/exynos/exynos_drm_drv.c
+index 6cc7bf77b..3afea8ed0 100644
+--- a/drivers/gpu/drm/exynos/exynos_drm_drv.c
++++ b/drivers/gpu/drm/exynos/exynos_drm_drv.c
+@@ -7,6 +7,7 @@
+  *	Seung-Woo Kim <sw0312.kim@samsung.com>
+  */
+ 
++#include <linux/aperture.h>
+ #include <linux/component.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/platform_device.h>
+@@ -241,6 +242,14 @@ static int exynos_drm_bind(struct device *dev)
+ 	unsigned int clone_mask;
+ 	int ret;
+ 
++	/*
++	 * Kick out a firmware framebuffer (simple-framebuffer left behind by
++	 * the bootloader) before DECON is reprogrammed.
++	 */
++	ret = aperture_remove_all_conflicting_devices(exynos_drm_driver.name);
++	if (ret)
++		return ret;
++
+ 	drm = drm_dev_alloc(&exynos_drm_driver, dev);
+ 	if (IS_ERR(drm))
+ 		return PTR_ERR(drm);
+-- 
+2.43.0
+

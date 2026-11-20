@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: battery charge limit
+After=multi-user.target
+[Service]
+ExecStart=/usr/local/sbin/gta2-charge
+Restart=on-failure
+RestartSec=30
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=gta2: web panel on :80 (started on the first connection)
+[Socket]
+ListenStream=80
+Accept=no
+NoDelay=true
+[Install]
+WantedBy=sockets.target

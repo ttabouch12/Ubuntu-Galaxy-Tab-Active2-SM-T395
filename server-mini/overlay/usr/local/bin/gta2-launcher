@@ -2,7 +2,7 @@
 # gta2srv home screen: clock, live status, app tiles, screensaver. Also owns the hardware keys (one process, less RAM):
 #   POWER screen off/on   VOL+/- brightness   HOME this screen   BACK Esc   RECENTS keyboard
 import tkinter as tk, subprocess, glob, os, struct, select, threading, time, socket, json, random
-from gta2ui import BG, CARD, FG, DIM, ACC, F, rd, sh
+from gta2ui import *
 CFG = os.path.expanduser('~/.config/gta2'); SS = CFG + '/screensaver.json'; SSNOW = CFG + '/screensaver_now'
 SSDIR = '/userdata/gta2srv/share/Screensaver'
 
@@ -168,57 +168,107 @@ class Saver:
 r = tk.Tk(className='gta2-launcher'); r.title('gta2-launcher'); r.configure(bg=BG); r.attributes('-fullscreen', True)
 saver = Saver()
 threading.Thread(target=keys, daemon=True).start()
-top = tk.Frame(r, bg=BG); top.pack(fill='x', padx=28, pady=(30, 4))
-clock = tk.Label(top, font=(F, 54, 'bold'), bg=BG, fg=FG); clock.pack(anchor='w')
-sub = tk.Label(top, font=(F, 15), bg=BG, fg=DIM); sub.pack(anchor='w')
-cards = tk.Frame(r, bg=BG, cursor='hand2'); cards.pack(fill='x', padx=22, pady=10)
+W = r.winfo_screenwidth()
+TERM = "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0f1115' -fg '#eef1f6' -e bash -l"
+TILES = (('▣', 'Second screen', 'Moonlight', lambda: run('gta2-moonlight')),
+         ('›_', 'Terminal', 'bash', lambda: run(TERM + ' & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard')),
+         ('docker', 'Docker', 'Portainer', lambda: run('gta2-docker')),
+         ('▤', 'System', 'monitor', lambda: app('gta2-sysinfo', 'gta2-sysinfo')),
+         ('⇅', 'Files', 'share', lambda: app('gta2-settings', 'gta2-settings --tab share')),
+         ('◉', 'Kiosk', 'web page', lambda: run('gta2-kiosk')),
+         ('⚙', 'Settings', '', lambda: app('gta2-settings', 'gta2-settings')),
+         ('power', 'Power', 'reboot · off', lambda: run('gta2-settings --power')))
+
+# ---- header: logo, clock, date, chips
+top = tk.Frame(r, bg=BG); top.pack(fill='x', padx=26, pady=(26, 4))
+try:
+    from PIL import Image, ImageTk
+    LOGO = ImageTk.PhotoImage(Image.open('/usr/share/gta2/gta2-logo.png').resize((84, 84), Image.LANCZOS))
+    tk.Label(top, image=LOGO, bg=BG).pack(side='left', padx=(0, 18))
+except Exception:
+    pass
+tc = tk.Frame(top, bg=BG); tc.pack(side='left')
+clock = tk.Label(tc, font=(F, 50, 'bold'), bg=BG, fg=FG); clock.pack(anchor='w')
+sub = tk.Label(tc, font=(F, 14), bg=BG, fg=DIM); sub.pack(anchor='w')
+chips = tk.Label(r, font=(F, 13), bg=BG, fg=DIM, anchor='w', justify='left'); chips.pack(fill='x', padx=30, pady=(4, 6))
+
+# ---- stat cards
+cards = tk.Frame(r, bg=BG); cards.pack(fill='x', padx=20, pady=6)
 vals = {}
-for i, k in enumerate(('CPU', 'RAM', 'TEMP', 'BATT')):
-    c = tk.Frame(cards, bg=CARD); c.grid(row=0, column=i, sticky='nsew', padx=6); cards.columnconfigure(i, weight=1)
-    a = tk.Label(c, text=k, font=(F, 11), bg=CARD, fg=DIM); a.pack(anchor='w', padx=12, pady=(10, 0))
-    vals[k] = tk.Label(c, font=(F, 20, 'bold'), bg=CARD, fg=FG); vals[k].pack(anchor='w', padx=12, pady=(0, 10))
-    for w in (c, a, vals[k]):
-        w.bind('<Button-1>', lambda e: app('gta2-sysinfo', 'gta2-sysinfo'))
-net = tk.Label(r, font=('DejaVu Sans Mono', 13), bg=BG, fg=DIM, justify='left', anchor='w'); net.pack(fill='x', padx=30, pady=(2, 6))
-grid = tk.Frame(r, bg=BG); grid.pack(fill='both', expand=True, padx=22, pady=4)
-TERM = "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0d1117' -fg '#e6edf3' -e bash -l"
-TILES = (('◩', 'Second screen', lambda: run('gta2-moonlight')),
-         ('⌨', 'Terminal', lambda: run(TERM + ' & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard')),
-         ('◫', 'Docker', lambda: run('gta2-docker')),
-         ('▤', 'System', lambda: app('gta2-sysinfo', 'gta2-sysinfo')),
-         ('⇅', 'Files', lambda: app('gta2-settings', 'gta2-settings --tab share')),
-         ('▣', 'Kiosk', lambda: run('gta2-kiosk')),
-         ('⚙', 'Settings', lambda: app('gta2-settings', 'gta2-settings')),
-         ('↻', 'Power', lambda: run('gta2-settings --power')))
-for i, (ic, name, cmd) in enumerate(TILES):
-    t = tk.Frame(grid, bg=CARD, cursor='hand2'); t.grid(row=i // 2, column=i % 2, sticky='nsew', padx=6, pady=6)
-    grid.columnconfigure(i % 2, weight=1); grid.rowconfigure(i // 2, weight=1)
-    a = tk.Label(t, text=ic, font=(F, 38), bg=CARD, fg=ACC); a.pack(expand=True, pady=(10, 0))
-    b = tk.Label(t, text=name, font=(F, 17), bg=CARD, fg=FG); b.pack(expand=True, pady=(0, 10))
-    for w in (t, a, b):
-        w.bind('<Button-1>', lambda e, c=cmd: c())
+CW = (W - 40 - 3 * 12) // 4
+for i, (k, col) in enumerate((('CPU', TILE[0]), ('RAM', TILE[1]), ('TEMP', TILE[4]), ('BATTERY', TILE[3]))):
+    c = tk.Canvas(cards, width=CW, height=118, bg=BG, highlightthickness=0, bd=0, cursor='hand2')
+    c.grid(row=0, column=i, padx=6)
+    img = rrect(CW, 118, 22, CARD)
+    if img:
+        c.create_image(0, 0, image=img, anchor='nw')
+    c.create_text(16, 22, text=k, anchor='w', font=(F, 11, 'bold'), fill=DIM)
+    v = c.create_text(16, 60, text='', anchor='w', font=(F, 22, 'bold'), fill=FG)
+    c.create_rectangle(16, 92, CW - 16, 100, outline='', fill=CARD2)
+    b = c.create_rectangle(16, 92, 16, 100, outline='', fill=col)
+    vals[k] = (c, v, b, col)
+    c.bind('<ButtonRelease-1>', lambda e: app('gta2-sysinfo', 'gta2-sysinfo'))
+
+
+def setcard(k, text, frac):
+    c, v, b, col = vals[k]
+    c.itemconfig(v, text=text)
+    c.coords(b, 16, 92, 16 + max(0, min(1, frac)) * (CW - 32), 100)
+
+
+# ---- app tiles
+grid = tk.Frame(r, bg=BG); grid.pack(fill='both', expand=True, padx=20, pady=8)
+TW = (W - 40 - 12) // 2
+TH = 206
+for i, (ic, name, hint, cmd) in enumerate(TILES):
+    c = tk.Canvas(grid, width=TW, height=TH, bg=BG, highlightthickness=0, bd=0, cursor='hand2')
+    c.grid(row=i // 2, column=i % 2, padx=6, pady=6)
+    img = rrect(TW, TH, 28, CARD)
+    if img:
+        c.create_image(0, 0, image=img, anchor='nw')
+    ci = circle(76, TILE[i % len(TILE)])
+    if ci:
+        c.create_image(26, 26, image=ci, anchor='nw')
+    glyph(c, 64, 64, ic, 30)
+    c.create_text(26, 128, text=name, anchor='w', font=(F, 18, 'bold'), fill=FG)
+    c.create_text(26, 152, text=hint, anchor='w', font=(F, 12), fill=DIM)
+
+    def press(e, c=c):
+        c.move('all', 0, 2)
+
+    def rel(e, c=c, cmd=cmd):
+        c.move('all', 0, -2)
+        if 0 <= e.x <= TW and 0 <= e.y <= TH:
+            cmd()
+    c.bind('<ButtonPress-1>', press)
+    c.bind('<ButtonRelease-1>', rel)
 tk.Label(r, text='POWER screen · VOL brightness · HOME here · BACK Esc · RECENTS keyboard',
-         font=(F, 11), bg=BG, fg='#484f58').pack(side='bottom', pady=10)
+         font=(F, 11), bg=BG, fg=FAINT).pack(side='bottom', pady=12)
 prev = [0, 0]
 
 
 def tick():
-    clock.config(text=time.strftime('%H:%M')); sub.config(text=time.strftime('%A %d %B') + '  ·  ' + socket.gethostname())
+    clock.config(text=time.strftime('%H:%M')); sub.config(text=time.strftime('%A, %d %B') + '   ·   ' + socket.gethostname())
     try:
-        a = list(map(int, open('/proc/stat').readline().split()[1:])); idle, tot = a[3] + a[4], sum(a)
-        cpu = 100 * (1 - (idle - prev[0]) / max(1, tot - prev[1])); prev[:] = [idle, tot]
+        a = list(map(int, open('/proc/stat').readline().split()[1:])); idle_, tot = a[3] + a[4], sum(a)
+        cpu = 100 * (1 - (idle_ - prev[0]) / max(1, tot - prev[1])); prev[:] = [idle_, tot]
         m = dict(l.split(':') for l in open('/proc/meminfo') if ':' in l)
-        used = (int(m['MemTotal'].split()[0]) - int(m['MemAvailable'].split()[0])) // 1024
+        mt = int(m['MemTotal'].split()[0]); used = (mt - int(m['MemAvailable'].split()[0]))
     except Exception:
-        cpu, used = 0, 0
-    tz = max([int(x) for x in (rd(z + '/temp', '0') for z in glob.glob('/sys/class/thermal/thermal_zone*')) if x.isdigit()] or [0])
-    vals['CPU'].config(text='%d%%' % cpu); vals['RAM'].config(text='%d MB' % used)
-    vals['TEMP'].config(text='%d°C' % (tz // 1000 if tz > 1000 else tz))
-    B = next((p for p in glob.glob('/sys/class/power_supply/*') if rd(p + '/type') == 'Battery'), '/sys/class/power_supply/battery')
-    vals['BATT'].config(text=rd(B + '/capacity') + '%')
-    ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{split($4,a,\"/\"); printf \"%-7s %s\\n\", $2, a[1]}'")
+        cpu, used, mt = 0, 0, 1
+    temps = [int(x) for x in (rd(z + '/temp', '') for z in glob.glob('/sys/class/thermal/thermal_zone*')
+             if 'fuel' not in rd(z + '/type', '') and 'batt' not in rd(z + '/type', '').lower()) if x.lstrip('-').isdigit()]
+    tz = max(temps) // 1000 if temps else 0
+    B = next((p for p in glob.glob('/sys/class/power_supply/*') if rd(p + '/type') == 'Battery'), None)
+    cap = rd(B + '/capacity', '?') if B else '?'
+    st = rd(B + '/status', '') if B else ''
+    setcard('CPU', '%d%%' % cpu, cpu / 100)
+    setcard('RAM', '%d MB' % (used // 1024), used / mt)
+    setcard('TEMP', '%d°C' % tz if tz else '—', tz / 100)
+    setcard('BATTERY', cap + ('%' if cap.isdigit() else '') + (' ⚡' if st == 'Charging' else ''), int(cap) / 100 if cap.isdigit() else 0)
+    ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{split($4,a,\"/\"); printf \"%s %s   \", $2, a[1]}'")
     wl = sh("nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2")
-    net.config(text=(('Wi-Fi   ' + wl + '\n') if wl else '') + ips)
+    chips.config(text=(('Wi-Fi  ' + wl + '     ') if wl else 'Wi-Fi  off     ') + ips)
     r.after(3000, tick)
 
 
@@ -229,6 +279,8 @@ def idle():  # screensaver timer
         c = saver.cfg()
         if c['enabled'] and time.time() - state['last'] > int(c['after']) * 60:
             saver.show()
+        elif not c['enabled'] and int(c.get('screen_off', 0)) > 0 and time.time() - state['last'] > int(c['screen_off']) * 60:
+            screen(False)  # screen timeout; the power key wakes it
     r.after(5000, idle)
 
 
