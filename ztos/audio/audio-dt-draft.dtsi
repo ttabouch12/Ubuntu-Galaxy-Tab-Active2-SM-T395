@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * DRAFT, NOT BUILT, NOT FOR BOOTING: Exynos7870 audio nodes for the Galaxy Tab Active2,
+ * translated from the vendor 3.18 DT (samsungexynos7870 kernel, lineage-20 branch:
+ * exynos7870.dtsi:344-362, 730-811; gtactive2_common.dtsi:102-118, 788-848;
+ * gtactive2lte_eur_open_04.dts:448-475). Clock mapping to mainline CMU_DISPAUD IDs is by
+ * name and must be checked against the vendor clock numbers (413 = dispaud_mi2s_aud,
+ * 414 = dispaud_mi2s_amp, 461 = aud_pll, 462 = d1_i2s/d1_mi2s, 463 = d1_mixer).
+ * The codec and mixer compatibles need drivers that do not exist yet (see AUDIO_PLAN.md).
+ */
+#include <dt-bindings/clock/samsung,exynos7870-cmu.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+&soc {
+	/* DISPAUD system registers: DISPAUD_CFG soft resets at +0x1000 (bits 3 ADMA, 2 AMP, 1 MI2S, 0 MIXER) */
+	dispaud_sysreg: syscon@148f0000 {
+		compatible = "samsung,exynos7870-dispaud-sysreg", "syscon";
+		reg = <0x148f0000 0x1040>;
+	};
+
+	adma: dma-controller@14890000 {
+		compatible = "arm,pl330", "arm,primecell";
+		reg = <0x14890000 0x1000>;
+		interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&cmu_dispaud CLK_GOUT_DISPAUD_APB_AUD_AMP>;	/* vendor 414, check */
+		clock-names = "apb_pclk";
+		#dma-cells = <1>;
+		arm,pl330-periph-burst;
+	};
+
+	audmixer: audio-mixer@14880000 {
+		compatible = "samsung,exynos7870-audmixer";	/* vendor "samsung,s1402x": driver to port */
+		reg = <0x14880000 0x200>;
+		clocks = <&cmu_dispaud CLK_GOUT_DISPAUD_MIXER_AUD_SYSCLK>,	/* vendor 463 d1_mixer */
+			 <&cmu_dispaud CLK_GOUT_DISPAUD_APB_AUD>;		/* vendor 412 */
+		clock-names = "audmixer_dout", "audmixer_aclk";
+		samsung,sysreg = <&dispaud_sysreg>;
+		samsung,pmu-syscon = <&pmu_system_controller>;	/* pad retention 0x3028 bit 28 */
+		samsung,bck-mcko-mode;
+		pinctrl-names = "default", "idle";
+		pinctrl-0 = <&i2s_pmic_bus>;
+		pinctrl-1 = <&i2s_pmic_bus_idle>;
+		#sound-dai-cells = <0>;
+		status = "disabled";
+	};
+
+	i2s0: i2s@148a0000 {
+		compatible = "samsung,exynos7-i2s";
+		reg = <0x148a0000 0x100>;
+		interrupts = <GIC_SPI 69 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&adma 0>, <&adma 2>, <&adma 1>;
+		dma-names = "tx", "rx", "tx-sec";
+		clocks = <&cmu_dispaud CLK_GOUT_DISPAUD_MI2S_AUD_I2SCODCLKI>,	/* vendor 413 */
+			 <&cmu_dispaud CLK_DOUT_DISPAUD_MI2S>,			/* vendor 462 */
+			 <&cmu_dispaud CLK_DOUT_DISPAUD_MI2S>;
+		clock-names = "iis", "i2s_opclk0", "i2s_opclk1";
+		assigned-clocks = <&cmu_dispaud CLK_MOUT_DISPAUD_MI2S>;
+		assigned-clock-parents = <&cmu_dispaud CLK_FOUT_DISPAUD_AUD_PLL>;
+		#clock-cells = <1>;
+		#sound-dai-cells = <1>;
+		status = "disabled";
+	};
+};
+
+&pinctrl_dispaud {
+	i2s_pmic_bus: i2s-pmic-bus-pins {
+		samsung,pins = "gpz1-0", "gpz1-2", "gpz1-3", "gpz1-4";
+		samsung,pin-function = <2>;
+		samsung,pin-pud = <3>;
+		samsung,pin-drv = <5>;
+	};
+	i2s_pmic_bus_idle: i2s-pmic-bus-idle-pins {
+		samsung,pins = "gpz1-0", "gpz1-2", "gpz1-3", "gpz1-4";
+		samsung,pin-function = <0>;
+		samsung,pin-pud = <3>;
+		samsung,pin-drv = <5>;
+	};
+};
+
+&pinctrl_alive {
+	cod3026_irq: cod3026-irq-pins {
+		samsung,pins = "gpa2-7";
+		samsung,pin-pud = <0>;
+		samsung,pin-drv = <3>;
+	};
+};
+
+/* needs the i2c-exynos5 10-bit patch (0001-i2c-exynos5-support-10-bit-target-addresses.patch) */
+&hsi2c0 {
+	codec: audio-codec@4 {
+		compatible = "samsung,cod3026x";		/* vendor "codec,cod3026x": driver to port */
+		reg = <(0x04 | I2C_TEN_BIT_ADDRESS)>;
+		vdd-supply = <&vdd_ldo25>;			/* S2MPU05 LDO25, check label in our DT */
+		pinctrl-names = "default";
+		pinctrl-0 = <&cod3026_irq>;
+		interrupt-parent = <&gpa2>;
+		interrupts = <7 IRQ_TYPE_EDGE_BOTH>;
+		#sound-dai-cells = <0>;
+		status = "disabled";
+	};
+};
+
+/ {
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "gtactive2-cod3026x";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,aux-devs = <&audmixer>;
+		simple-audio-card,widgets = "Speaker", "Speaker", "Headphone", "Headphones";
+		simple-audio-card,routing = "Speaker", "SPKOUT", "Headphones", "HPOUTL", "Headphones", "HPOUTR";
+		status = "disabled";
+
+		simple-audio-card,cpu {
+			sound-dai = <&i2s0 0>;
+		};
+		simple-audio-card,codec {
+			sound-dai = <&codec>;
+		};
+	};
+};

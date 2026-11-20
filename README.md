@@ -16,6 +16,9 @@ Docker, file sharing, a touch control panel on the device and a web dashboard fo
 | Use it for | Docker host, NAS, Pi-hole, Home Assistant, wall dashboard | Touch tablet, calls/SMS, apps |
 | Folder | [`server-mini/`](server-mini/README.md) | [`ubuntu-touch/`](ubuntu-touch/README.md) |
 
+> **ztOS (experimental, not continued):** ztOS with the Mali GPU on our 6.18 kernel boots and runs,
+> without sound or a full display driver. Everything is kept in [`ztos/`](ztos/README.md).
+
 > Looking for Android? See **[LineageOS 20 (Android 13) OC edition](https://github.com/ttabouch12/LineageOS-20-Galaxy-Tab-Active2-SM-T395)**.
 > That is also the way back to Android from either build here.
 

@@ -1,0 +1,93 @@
+# ztOSIAL manifest: Samsung Galaxy Tab Active2 LTE (SM-T395, gtactive2lte), Exynos 7870.
+# Layout and keys follow ztos-device-samsung-starlte/vendor/ztos/manifest.toml; the
+# parameters each generic backend takes are at the top of its class in
+# ztos-ial/ztos_ial/backends/generic.py.
+#
+# Every value marked UNVERIFIED was not read on a running mainline 6.18 tablet;
+# check it with `ztos-ial status` / `ztos-ial test` and `ls /sys/class/...` on the
+# device, then remove the mark.
+
+[device]
+codename = "samsung-gtactive2lte"
+name = "Samsung Galaxy Tab Active2"
+form_factor = "tablet"           # UNVERIFIED: ztOS only ever ships "phone"; Device1 just passes it through
+# Device1.Scale. ztMETRO itself sizes from ZTMETRO_SCALE (overlay/etc/ztos/session.env);
+# its automatic value would be 800/360 = 2.20. 1.75 gives ~457 points across.
+scale = 1.75                     # UNVERIFIED (taste; 1.5-2.2 all work)
+
+[gsi]
+min = "0.2.1"
+
+[ial.Power1]
+backend = "generic"
+battery = "/sys/class/power_supply/sm5705-fuelgauge"     # name from wt-power sm5705_fuelgauge.c (.name)
+charger = "/sys/class/power_supply/sm5705-charger"       # name from wt-power sm5705_charger.c (.name)
+current_sign = 1                 # UNVERIFIED: + must mean charging; flip to -1 if Status=charging shows < 0
+current_node = "/sys/class/power_supply/sm5705-fuelgauge/current_now"
+# temp is in 0.1 C (sm5705_fg_get_temp), which is what the generic backend expects
+
+[ial.Perf1]
+backend = "generic"
+# no GPU devfreq yet (no OPP table for gpu@11400000); with OPPs it becomes
+# /sys/class/devfreq/11400000.gpu
+gpu_devfreq = ""                 # UNVERIFIED path once panfrost DVFS exists
+thermal_unit = "millicelsius"    # standard thermal sysfs
+thermal_marks = [70, 76, 82]     # UNVERIFIED: S9 values; sealed rugged case, consider lower
+# all eight A53 stay online: no zrn-hotplug on this kernel
+keep_online = [0, 1, 2, 3, 4, 5, 6, 7]
+hotplug = false
+
+[ial.Perf1.thermal]
+soc = "/sys/class/thermal/thermal_zone0/temp"   # UNVERIFIED: TMU (samsung,exynos7870-tmu) only in wt-gpu's -safe.dts
+
+# Cluster ceilings by cores online. 1794 MHz is the OC kernel's top OPP (stock 1586);
+# the voltages come from ECT/ASV, see ztos_research.md section 3.
+[ial.Perf1.caps.policy0]
+1 = 1794000                      # UNVERIFIED (needs cpufreq-dt OPPs from wt-cpu)
+2 = 1794000
+3 = 1794000
+4 = 1794000
+
+[ial.Perf1.caps.policy4]
+1 = 1794000                      # UNVERIFIED
+2 = 1794000
+3 = 1794000
+4 = 1794000
+
+[ial.Display1]
+backend = "generic"
+# Left unset on purpose: the generic backend takes the first /sys/class/backlight/*.
+# The S6D7AA0 panel driver registers its DCS backlight as dev_name(dsi device),
+# expected "/sys/class/backlight/14800000.dsi.0" (UNVERIFIED). max_brightness 255
+# (panel-samsung-s6d7aa0.c default; the gtactive2 desc may lower it).
+# node = "/sys/class/backlight/14800000.dsi.0"
+curve = "gamma:2.2"              # UNVERIFIED (LCD; linear is the default)
+
+[ial.Sleep1]
+# suspend is untested on mainline 7870: the vendor backend reports it off and
+# layer.sh masks the sleep targets
+backend = "vendor"
+module = "/vendor/ztos/ial/gtactive2lte.py"
+
+[ial.Sensors1]
+backend = "generic"              # IIO: lsm6ds3 @6b, ak09916 @0c, tmd3725 @39 on i2c7 are not in the DT yet
+
+[ial.Haptics1]
+backend = "generic"              # vibrator (gpf4-0) not in the DT yet: shows as absent
+
+[ial.Lights1]
+backend = "generic"              # no notification LED; no torch driver
+
+[ial.Modem1]
+backend = "generic"              # Shannon modem: no mainline driver, ModemManager finds none
+
+[ial.Android1]
+backend = "generic"
+
+[android]
+binder = "none"                  # out/.config has no ANDROID_BINDER_IPC/BINDERFS: Waydroid hidden
+gralloc = "gbm"
+memory_budget_mb = 1024
+
+[boot]
+usb_gadget_udc = "13600000.usb"  # UNVERIFIED: dwc3 child of usb@13600000 may be named differently (ls /sys/class/udc)

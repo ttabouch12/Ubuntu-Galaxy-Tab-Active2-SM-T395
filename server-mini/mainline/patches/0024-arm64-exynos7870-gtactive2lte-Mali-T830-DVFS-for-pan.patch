@@ -1,0 +1,379 @@
+From fe7a832c214c71328b6c2ac1a45b5f539db1c72b Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 11:32:33 +0300
+Subject: [PATCH 24/26] arm64: exynos7870: gtactive2lte: Mali-T830 DVFS for
+ panfrost
+
+clk: samsung: exynos7870: add a G3D PLL rate table with the vendor G3D
+DVFS levels (343 - 1001 MHz stock, 1146/1246/1300 MHz overclock), let
+rate requests on the GPU core clock propagate to the PLL, and park
+CLK_G3D on the CMU_MIF switch clock while the PLL relocks, as the
+vendor DVFS code does.
+
+arm64: dts: exynos7870: add #cooling-cells to the GPU node.
+
+arm64: dts: exynos: gtactive2lte: describe vdd_g3d (S2MPU05 BUCK2) as
+mali-supply, add the GPU OPP table with this unit's ASV voltages (the
+overclock levels are turbo-mode and disabled by default), select the
+G3D PLL as CLK_G3D parent and add the GPU to the cpu-thermal zone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01C7LhHVoCsrpwunEL6xJhiW
+---
+ .../dts/exynos/exynos7870-gtactive2lte.dts    |  89 ++++++++++
+ arch/arm64/boot/dts/exynos/exynos7870.dtsi    |   1 +
+ drivers/clk/samsung/clk-exynos7870.c          | 156 +++++++++++++++++-
+ 3 files changed, 242 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+index 3eb929227..575082cb1 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+@@ -12,6 +12,7 @@
+ #include <dt-bindings/gpio/gpio.h>
+ #include <dt-bindings/input/input.h>
+ #include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/thermal/thermal.h>
+ 
+ / {
+ 	model = "Samsung Galaxy Tab Active2 LTE";
+@@ -252,6 +253,13 @@ panel@0 {
+ };
+ 
+ &gpu {
++	mali-supply = <&vdd_buck2>;
++	operating-points-v2 = <&gpu_opp_table>;
++
++	/* Make sure CLK_G3D runs from the G3D PLL, which the OPPs scale */
++	assigned-clocks = <&cmu_g3d CLK_MOUT_G3D>;
++	assigned-clock-parents = <&cmu_g3d CLK_GOUT_G3D_MUX_PLL_CON>;
++
+ 	status = "okay";
+ };
+ 
+@@ -280,6 +288,7 @@ vdd_buck1: buck1 {
+ 				regulator-always-on;
+ 			};
+ 
++			/* vdd_g3d: the vendor GPU driver uses "BUCK2" */
+ 			vdd_buck2: buck2 {
+ 				regulator-name = "vdd_buck2";
+ 				regulator-min-microvolt = <500000>;
+@@ -896,6 +905,19 @@ cpu_crit: cpu-crit {
+ 					type = "critical";
+ 				};
+ 			};
++
++			/*
++			 * The TMU sensor is shared by the whole die; let the
++			 * GPU give up frequency as well when it gets hot. The
++			 * cooling device exists once panfrost is loaded.
++			 */
++			cooling-maps {
++				map0 {
++					trip = <&cpu_hot>;
++					cooling-device = <&gpu THERMAL_NO_LIMIT
++							       THERMAL_NO_LIMIT>;
++				};
++			};
+ 		};
+ 	};
+ };
+@@ -943,3 +965,70 @@ &cluster1_opp_table {
+ 	opp-449000000 { opp-microvolt = <925000 925000 1300000>; };
+ 	opp-343000000 { opp-microvolt = <925000 925000 1300000>; };
+ };
++
++/*
++ * GPU (Mali-T830 MP1) DVFS on S2MPU05 BUCK2. Levels are the vendor G3D DVFS
++ * table; stock maximum is 1001 MHz.
++ *
++ * Voltages: this unit's ECT/ASV values read on the vendor kernel are
++ * 1001 MHz = 0.900 V, 1146 MHz = 0.99375 V, 1246 MHz = 1.08125 V and
++ * 1300 MHz = 1.13125 V (1300 MHz also tested stable at 1.0625 V). The lower
++ * levels were not dumped and stay at the 0.900 V vendor table fallback; the
++ * 1001 MHz level gets the vendor 25 mV GPU_VOLTAGE_OFFSET_MARGIN on top.
++ *
++ * 1146 - 1300 MHz are overclocking levels (the G3D PLL VCO is specified up to
++ * 1200 MHz). devfreq does not honour turbo-mode, so they are disabled; set
++ * status = "okay" on them to opt in.
++ */
++/ {
++	gpu_opp_table: opp-table-gpu {
++		compatible = "operating-points-v2";
++
++		opp-343000000 {
++			opp-hz = /bits/ 64 <343000000>;
++			opp-microvolt = <900000>;
++		};
++		opp-450000000 {
++			opp-hz = /bits/ 64 <450000000>;
++			opp-microvolt = <900000>;
++		};
++		opp-545000000 {
++			opp-hz = /bits/ 64 <545000000>;
++			opp-microvolt = <900000>;
++		};
++		opp-676000000 {
++			opp-hz = /bits/ 64 <676000000>;
++			opp-microvolt = <900000>;
++		};
++		opp-728000000 {
++			opp-hz = /bits/ 64 <728000000>;
++			opp-microvolt = <900000>;
++		};
++		opp-845000000 {
++			opp-hz = /bits/ 64 <845000000>;
++			opp-microvolt = <900000>;
++		};
++		opp-1001000000 {
++			opp-hz = /bits/ 64 <1001000000>;
++			opp-microvolt = <925000>;
++		};
++		gpu_opp_1146: opp-1146000000 {
++			opp-hz = /bits/ 64 <1146000000>;
++			opp-microvolt = <993750>;
++			turbo-mode;
++			status = "disabled";
++		};
++		gpu_opp_1246: opp-1246000000 {
++			opp-hz = /bits/ 64 <1246000000>;
++			opp-microvolt = <1081250>;
++			turbo-mode;
++			status = "disabled";
++		};
++		gpu_opp_1300: opp-1300000000 {
++			opp-hz = /bits/ 64 <1300000000>;
++			opp-microvolt = <1131250>;
++			turbo-mode;
++			status = "disabled";
++		};
++	};
++};
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870.dtsi b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+index 892f636d9..2e6f676aa 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870.dtsi
++++ b/arch/arm64/boot/dts/exynos/exynos7870.dtsi
+@@ -485,6 +485,7 @@ gpu: gpu@11400000 {
+ 			clock-names = "core", "bus";
+ 			clocks = <&cmu_g3d CLK_GOUT_G3D_CLK>,
+ 				 <&cmu_g3d CLK_GOUT_G3D_ASYNCS_D0_CLK>;
++			#cooling-cells = <2>;
+ 
+ 			status = "disabled";
+ 		};
+diff --git a/drivers/clk/samsung/clk-exynos7870.c b/drivers/clk/samsung/clk-exynos7870.c
+index 30ffd0199..ab8368117 100644
+--- a/drivers/clk/samsung/clk-exynos7870.c
++++ b/drivers/clk/samsung/clk-exynos7870.c
+@@ -6,9 +6,14 @@
+  * Common Clock Framework support for Exynos7870.
+  */
+ 
++#include <linux/bitfield.h>
++#include <linux/clk.h>
+ #include <linux/clk-provider.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/platform_device.h>
+ 
+ #include <dt-bindings/clock/samsung,exynos7870-cmu.h>
+@@ -1167,6 +1172,7 @@ static const struct samsung_cmu_info fsys_cmu_info __initconst = {
+ #define CLK_CON_MUX_G3D			0x0208
+ #define CLK_CON_DIV_G3D_BUS		0x0400
+ #define CLK_CON_DIV_G3D_APB		0x0404
++#define CLK_STAT_MUX_G3D		0x0608
+ #define CLK_CON_GAT_G3D_ASYNCS_D0_CLK	0x0804
+ #define CLK_CON_GAT_G3D_ASYNC_PCLKM	0x0804
+ #define CLK_CON_GAT_G3D_CLK		0x0804
+@@ -1197,9 +1203,29 @@ static const unsigned long g3d_clk_regs[] __initconst = {
+ 	CLK_CON_GAT_G3D_SYSREG_PCLK,
+ };
+ 
++/*
++ * G3D PLL rate table (26 MHz reference). The rates are the levels of the
++ * vendor G3D DVFS table; P/M/S follow the vendor PLL141xx search algorithm
++ * (first exact match, 2 - 8 MHz reference after the pre-divider). The stock
++ * maximum is 1001 MHz; 1146 - 1300 MHz are overclocking levels which run the
++ * VCO above its 1200 MHz specification and must only be used on purpose.
++ */
++static const struct samsung_pll_rate_table exynos7870_g3d_pll_rates[] __initconst = {
++	PLL_35XX_RATE(26 * MHZ, 1300000000U, 200, 4, 0),
++	PLL_35XX_RATE(26 * MHZ, 1246000000U, 623, 13, 0),
++	PLL_35XX_RATE(26 * MHZ, 1146000000U, 573, 13, 0),
++	PLL_35XX_RATE(26 * MHZ, 1001000000U, 154, 4, 0),
++	PLL_35XX_RATE(26 * MHZ,  845000000U, 130, 4, 0),
++	PLL_35XX_RATE(26 * MHZ,  728000000U, 112, 4, 0),
++	PLL_35XX_RATE(26 * MHZ,  676000000U, 104, 4, 0),
++	PLL_35XX_RATE(26 * MHZ,  545000000U, 545, 13, 1),
++	PLL_35XX_RATE(26 * MHZ,  450000000U, 450, 13, 1),
++	PLL_35XX_RATE(26 * MHZ,  343000000U, 343, 13, 1),
++};
++
+ static const struct samsung_pll_clock g3d_pll_clks[] __initconst = {
+ 	PLL(pll_1417x, CLK_FOUT_G3D_PLL, "fout_g3d_pll", "oscclk",
+-	    PLL_LOCKTIME_G3D_PLL, PLL_CON0_G3D_PLL, NULL),
++	    PLL_LOCKTIME_G3D_PLL, PLL_CON0_G3D_PLL, exynos7870_g3d_pll_rates),
+ };
+ 
+ /* List of parent clocks for muxes in CMU_G3D */
+@@ -1210,14 +1236,15 @@ PNAME(mout_g3d_p)		= { "gout_g3d_mux_pll_con",
+ static const struct samsung_mux_clock g3d_mux_clks[] __initconst = {
+ 	MUX(CLK_MOUT_G3D_SWITCH_USER, "mout_g3d_switch_user",
+ 	    mout_g3d_switch_user_p, CLK_CON_MUX_G3D_SWITCH_USER, 12, 1),
+-	MUX(CLK_MOUT_G3D, "mout_g3d", mout_g3d_p, CLK_CON_MUX_G3D, 12, 1),
++	MUX_F(CLK_MOUT_G3D, "mout_g3d", mout_g3d_p, CLK_CON_MUX_G3D, 12, 1,
++	      CLK_SET_RATE_PARENT | CLK_SET_RATE_NO_REPARENT, 0),
+ };
+ 
+ static const struct samsung_div_clock g3d_div_clks[] __initconst = {
+ 	DIV(CLK_DOUT_G3D_APB, "dout_g3d_apb", "dout_g3d_bus",
+ 	    CLK_CON_DIV_G3D_APB, 0, 3),
+-	DIV(CLK_DOUT_G3D_BUS, "dout_g3d_bus", "gout_g3d_mux",
+-	    CLK_CON_DIV_G3D_BUS, 0, 3),
++	DIV_F(CLK_DOUT_G3D_BUS, "dout_g3d_bus", "gout_g3d_mux",
++	      CLK_CON_DIV_G3D_BUS, 0, 3, CLK_SET_RATE_PARENT, 0),
+ };
+ 
+ static const struct samsung_gate_clock g3d_gate_clks[] __initconst = {
+@@ -1270,6 +1297,124 @@ static const struct samsung_cmu_info g3d_cmu_info __initconst = {
+ 	.nr_clk_ids		= G3D_NR_CLK,
+ };
+ 
++/*
++ * CLK_G3D (CLK_CON_MUX_G3D, select bit 12) picks either the G3D PLL (0) or
++ * CLKCMU_G3D_SWITCH from CMU_MIF (1); the status register reports
++ * 1 << selected_parent in bits [13:12]. Like the vendor DVFS code, keep the
++ * GPU on the switch clock (at most 800 MHz, which every G3D OPP voltage
++ * supports) while the G3D PLL relocks to a new rate.
++ */
++#define G3D_MUX_SEL			BIT(12)
++#define G3D_MUX_STAT			GENMASK(13, 12)
++#define G3D_PLL_ENABLE			BIT(31)
++#define G3D_PLL_LOCKED			BIT(29)
++#define G3D_MUX_TIMEOUT_US		1000
++
++struct exynos7870_g3d_pll_nb {
++	struct notifier_block nb;
++	void __iomem *base;
++};
++
++static int exynos7870_g3d_select(void __iomem *base, unsigned int parent)
++{
++	u32 val;
++	int ret;
++
++	val = readl(base + CLK_CON_MUX_G3D);
++	val &= ~G3D_MUX_SEL;
++	val |= FIELD_PREP(G3D_MUX_SEL, parent);
++	writel(val, base + CLK_CON_MUX_G3D);
++
++	ret = readl_poll_timeout_atomic(base + CLK_STAT_MUX_G3D, val,
++					FIELD_GET(G3D_MUX_STAT, val) == BIT(parent),
++					1, G3D_MUX_TIMEOUT_US);
++	if (ret)
++		pr_err("%s: CLK_G3D mux did not switch to parent %u\n",
++		       __func__, parent);
++
++	return ret;
++}
++
++static bool exynos7870_g3d_pll_locked(void __iomem *base)
++{
++	u32 val = readl(base + PLL_CON0_G3D_PLL);
++
++	return (val & (G3D_PLL_ENABLE | G3D_PLL_LOCKED)) ==
++	       (G3D_PLL_ENABLE | G3D_PLL_LOCKED);
++}
++
++static int exynos7870_g3d_pll_notifier_cb(struct notifier_block *nb,
++					  unsigned long event, void *data)
++{
++	struct exynos7870_g3d_pll_nb *g3d =
++		container_of(nb, struct exynos7870_g3d_pll_nb, nb);
++	int ret = 0;
++
++	switch (event) {
++	case PRE_RATE_CHANGE:
++		ret = exynos7870_g3d_select(g3d->base, 1);
++		break;
++	case POST_RATE_CHANGE:
++	case ABORT_RATE_CHANGE:
++		/* Never hand the GPU over to a PLL that is off or unlocked */
++		if (!exynos7870_g3d_pll_locked(g3d->base)) {
++			pr_err("%s: G3D PLL not locked, staying on switch clock\n",
++			       __func__);
++			return notifier_from_errno(-EBUSY);
++		}
++		ret = exynos7870_g3d_select(g3d->base, 0);
++		break;
++	}
++
++	return notifier_from_errno(ret);
++}
++
++static struct exynos7870_g3d_pll_nb exynos7870_g3d_pll_nb = {
++	.nb.notifier_call = exynos7870_g3d_pll_notifier_cb,
++};
++
++static void __init exynos7870_g3d_pll_nb_register(struct device *dev)
++{
++	struct of_phandle_args clkspec = {
++		.np = dev->of_node,
++		.args_count = 1,
++		.args = { CLK_FOUT_G3D_PLL },
++	};
++	struct clk *pll;
++	u32 mux;
++	int ret;
++
++	exynos7870_g3d_pll_nb.base = of_iomap(dev->of_node, 0);
++	if (!exynos7870_g3d_pll_nb.base) {
++		dev_err(dev, "failed to map CMU_G3D\n");
++		return;
++	}
++
++	mux = readl(exynos7870_g3d_pll_nb.base + CLK_CON_MUX_G3D);
++	if (mux & G3D_MUX_SEL)
++		dev_warn(dev, "CLK_G3D runs from the switch clock at boot\n");
++
++	pll = of_clk_get_from_provider(&clkspec);
++	if (IS_ERR(pll)) {
++		dev_err(dev, "failed to get G3D PLL: %ld\n", PTR_ERR(pll));
++		goto err_unmap;
++	}
++
++	ret = clk_notifier_register(pll, &exynos7870_g3d_pll_nb.nb);
++	if (ret) {
++		dev_err(dev, "failed to register G3D PLL notifier: %d\n", ret);
++		clk_put(pll);
++		goto err_unmap;
++	}
++
++	/* The clock reference is kept for the notifier */
++	return;
++
++err_unmap:
++	iounmap(exynos7870_g3d_pll_nb.base);
++	exynos7870_g3d_pll_nb.base = NULL;
++}
++
+ /*
+  * Register offsets for CMU_ISP (0x144d0000)
+  */
+@@ -1983,6 +2128,9 @@ static int __init exynos7870_cmu_probe(struct platform_device *pdev)
+ 	info = of_device_get_match_data(dev);
+ 	exynos_arm64_register_cmu(dev, dev->of_node, info);
+ 
++	if (info == &g3d_cmu_info)
++		exynos7870_g3d_pll_nb_register(dev);
++
+ 	return 0;
+ }
+ 
+-- 
+2.43.0
+

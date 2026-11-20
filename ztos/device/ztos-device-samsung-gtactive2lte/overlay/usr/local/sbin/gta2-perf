@@ -1,0 +1,16 @@
+#!/bin/sh
+# gtactive2lte CPU tuning (OPTIMIZE.md 4): schedutil 2 ms, cap 1794 MHz (never higher: 1.9-2.0 GHz hangs),
+# floor = lowest OPP >= 900 MHz on the little cluster for touch response. LRU_GEN all features.
+for p in /sys/devices/system/cpu/cpufreq/policy*; do
+  [ -d "$p" ] || continue
+  echo schedutil > $p/scaling_governor 2>/dev/null
+  echo 2000 > $p/schedutil/rate_limit_us 2>/dev/null
+  max=$(cat $p/cpuinfo_max_freq); [ "$max" -gt 1794000 ] && max=1794000; echo $max > $p/scaling_max_freq
+done
+P0=/sys/devices/system/cpu/cpufreq/policy0
+if [ -f $P0/scaling_available_frequencies ]; then
+  f=$(tr ' ' '\n' < $P0/scaling_available_frequencies | grep -E '^[0-9]+$' | sort -n | awk '$1>=900000{print;exit}')
+  [ -n "$f" ] && echo $f > $P0/scaling_min_freq
+fi
+echo y > /sys/kernel/mm/lru_gen/enabled 2>/dev/null
+exit 0

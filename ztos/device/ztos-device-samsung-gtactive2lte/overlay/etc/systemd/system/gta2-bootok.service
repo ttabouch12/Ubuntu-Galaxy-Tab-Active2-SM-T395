@@ -1,0 +1,15 @@
+[Unit]
+Description=gta2: this boot reached the shell, reset the initramfs boot counter
+# The gta2srv initramfs counts attempts in /data/gta2srv/ml/tries (it is /userdata
+# after switch_root) and disarms extlinux.conf on the 3rd failed boot. The Ubuntu
+# image resets it (gta2-bootok); ztOS has to as well.
+After=greetd.service ztos-iald.service
+RequiresMountsFor=/userdata
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 30
+ExecStart=/bin/sh -c 'echo 0 > /userdata/gta2srv/ml/tries && sync'
+
+[Install]
+WantedBy=multi-user.target

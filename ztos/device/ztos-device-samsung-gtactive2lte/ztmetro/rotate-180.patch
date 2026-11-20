@@ -1,0 +1,158 @@
+--- a/ztmetro/ztmetro.c
++++ b/ztmetro/ztmetro.c
+@@ -13116,12 +13116,14 @@
+  * is drawn unchanged (no dimming tint): then a scroll frame is a plane flip,
+  * no composition. Superscan's frames on the J5: 3 ms of GPU each, and the
+  * shell's whole frame with them, saved. */
++static bool rot_on(void);
++
+ static bool plane_pick(struct zt_server *server, struct zt_toplevel *app, const struct app_draw *draw,
+ 		bool app_covers, struct wlr_output_layer_state *ls) {
+ 	static const char *last_why;
+ 	const char *why = NULL;
+ #define PLANE_NO(reason) do { why = reason; goto no; } while (0)
+-	if (server->plane_off || getenv("ZTMETRO_NO_PLANE")) PLANE_NO("off");
++	if (server->plane_off || getenv("ZTMETRO_NO_PLANE") || rot_on()) PLANE_NO("off");
+ 	if (!app_covers || !app || !app->mapped) PLANE_NO("no app at rest in front");
+ 	if (server->peek > 0.001f || server->shade_h > 0.5f || server->splash ||
+ 			server->sensorhub_fail_screen || server->osk_slide > 0.003f || server->hyper_t > 0.003f ||
+@@ -13180,6 +13182,119 @@
+ 	return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+ }
+ 
++/* ZTMETRO_ROTATE=180: for a panel mounted upside down (Galaxy Tab Active2).
++ * The shell draws into an offscreen texture of the output's size exactly as
++ * before; at the end of the frame that texture is drawn into the output
++ * buffer turned by 180 degrees. Touch needs nothing: the digitizer is in the
++ * user's frame already. Display planes must be off (ZTMETRO_NO_PLANE=1): a
++ * plane would show the app the panel's way up. */
++static struct {
++	int on;			/* -1 not read yet, 0 off, 1 on */
++	GLuint tex, fbo, prog, vbo;
++	int w, h;
++} rot = { .on = -1 };
++
++static bool rot_on(void) {
++	if (rot.on < 0) {
++		const char *v = getenv("ZTMETRO_ROTATE");
++		rot.on = v && atoi(v) == 180;
++	}
++	return rot.on == 1;
++}
++
++static GLuint rot_shader(GLenum type, const char *src) {
++	GLuint s = glCreateShader(type);
++	glShaderSource(s, 1, &src, NULL);
++	glCompileShader(s);
++	GLint ok = 0;
++	glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
++	if (!ok) {
++		wlr_log(WLR_ERROR, "rotate: shader did not compile");
++	}
++	return s;
++}
++
++/* the offscreen target for this frame (0: rotation off or not possible) */
++static GLuint rot_target(int w, int h) {
++	if (!rot_on()) {
++		return 0;
++	}
++	if (rot.fbo && (rot.w != w || rot.h != h)) {
++		glDeleteFramebuffers(1, &rot.fbo);
++		glDeleteTextures(1, &rot.tex);
++		rot.fbo = rot.tex = 0;
++	}
++	if (!rot.fbo) {
++		glGenTextures(1, &rot.tex);
++		glBindTexture(GL_TEXTURE_2D, rot.tex);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++		glBindTexture(GL_TEXTURE_2D, 0);
++		glGenFramebuffers(1, &rot.fbo);
++		glBindFramebuffer(GL_FRAMEBUFFER, rot.fbo);
++		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rot.tex, 0);
++		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
++			wlr_log(WLR_ERROR, "rotate: offscreen framebuffer incomplete, drawing unrotated");
++			glBindFramebuffer(GL_FRAMEBUFFER, 0);
++			glDeleteFramebuffers(1, &rot.fbo);
++			glDeleteTextures(1, &rot.tex);
++			rot.fbo = rot.tex = 0;
++			rot.on = 0;
++			return 0;
++		}
++		rot.w = w, rot.h = h;
++	}
++	if (!rot.prog) {
++		static const char *vs =
++			"attribute vec2 pos;\n"
++			"varying vec2 uv;\n"
++			"void main() {\n"
++			"	uv = vec2(1.0 - (pos.x + 1.0) * 0.5, 1.0 - (pos.y + 1.0) * 0.5);\n"
++			"	gl_Position = vec4(pos, 0.0, 1.0);\n"
++			"}\n";
++		static const char *fs =
++			"precision mediump float;\n"
++			"varying vec2 uv;\n"
++			"uniform sampler2D tex;\n"
++			"void main() { gl_FragColor = texture2D(tex, uv); }\n";
++		rot.prog = glCreateProgram();
++		glAttachShader(rot.prog, rot_shader(GL_VERTEX_SHADER, vs));
++		glAttachShader(rot.prog, rot_shader(GL_FRAGMENT_SHADER, fs));
++		glBindAttribLocation(rot.prog, 0, "pos");
++		glLinkProgram(rot.prog);
++		static const float quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++		glGenBuffers(1, &rot.vbo);
++		glBindBuffer(GL_ARRAY_BUFFER, rot.vbo);
++		glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
++		glBindBuffer(GL_ARRAY_BUFFER, 0);
++	}
++	return rot.fbo;
++}
++
++/* the frame, turned, into the output buffer */
++static void rot_present(GLuint out_fbo) {
++	glBindFramebuffer(GL_FRAMEBUFFER, out_fbo);
++	glViewport(0, 0, rot.w, rot.h);
++	glDisable(GL_SCISSOR_TEST);
++	glDisable(GL_BLEND);
++	glUseProgram(rot.prog);
++	glActiveTexture(GL_TEXTURE0);
++	glBindTexture(GL_TEXTURE_2D, rot.tex);
++	glUniform1i(glGetUniformLocation(rot.prog, "tex"), 0);
++	glBindBuffer(GL_ARRAY_BUFFER, rot.vbo);
++	glEnableVertexAttribArray(0);
++	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
++	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++	glDisableVertexAttribArray(0);
++	glBindBuffer(GL_ARRAY_BUFFER, 0);
++	glBindTexture(GL_TEXTURE_2D, 0);
++	glUseProgram(0);
++	glEnable(GL_BLEND);
++}
++
+ static void render_frame(struct zt_server *server) {
+ 	struct wlr_output *output = server->output->wlr_output;
+ 	uint32_t now = now_ms();
+@@ -13247,7 +13362,8 @@
+ 		render_retry_later(server);
+ 		return;
+ 	}
+-	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
++	GLuint rot_fbo = rot_target(output->width, output->height);
++	glBindFramebuffer(GL_FRAMEBUFFER, rot_fbo ? rot_fbo : fbo);
+ 	glViewport(0, 0, output->width, output->height);
+ 	glDisable(GL_SCISSOR_TEST);
+ 	glDisable(GL_DEPTH_TEST);
+@@ -13814,6 +13930,9 @@
+ 			}
+ 		}
+ 	}
++	if (rot_fbo) {
++		rot_present(fbo);
++	}
+ 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+ 	struct timespec t1, t2, t3;
+ 	clock_gettime(CLOCK_MONOTONIC, &t1);

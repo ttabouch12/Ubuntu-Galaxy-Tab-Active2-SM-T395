@@ -1,0 +1,11 @@
+[Unit]
+Description=gta2: Bluetooth address for the QCA9377 (hci_uart)
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gta2-bt-addr
+
+[Install]
+WantedBy=bluetooth.target

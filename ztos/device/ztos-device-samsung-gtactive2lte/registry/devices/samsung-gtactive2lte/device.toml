@@ -1,0 +1,41 @@
+# For a pull request to ztos-devices (devices/samsung-gtactive2lte/device.toml),
+# schema: ztos-devices/README.md. A native port: our own kernel, U-Boot chainload,
+# no boot.img; the root filesystem is an ext4 image FILE on USERDATA.
+
+[device]
+codename = "samsung-gtactive2lte"
+name = "Samsung Galaxy Tab Active2 LTE"
+arch = "aarch64"
+status = "untested"
+origin = "native"
+
+[source.native]
+repo = "https://github.com/<you>/ztos-device-samsung-gtactive2lte"
+commit = ""
+
+[kernel]
+mainline = true
+version = "6.18.0"
+soc = "exynos7870"
+gpu_driver = "panfrost"          # Mali-T830 MP1 (Midgard v5); ztconflo resolve.py maps every "exynos" to None, hence native
+
+[boot]
+# not one of fastboot | heimdall-bootimg | heimdall-isorec | twrp: S-Boot -> U-Boot (BOOT)
+# -> sysboot /extlinux/extlinux.conf on USERDATA -> Image + built-in initramfs -> loop root.
+flash_method = "uboot-extlinux"  # UNVERIFIED: ztconflo flash.py knows no such method; flash by hand (BUILD.md)
+rootfs_target = "userdata"       # as the file /data/gta2srv/zt/rootfs.img
+
+[ztmetro]
+scale = 1.75
+vibrator = "auto"
+rotation = 180                   # ztMETRO does not read this (/etc/ztmetro/config is unused);
+                                 # the device layer sets ZTMETRO_ROTATE=180 with ztmetro/rotate-180.patch
+
+[android]
+binder = "none"
+gralloc = "gbm"
+
+[verified]
+date = ""
+by = ""
+checklist = {}

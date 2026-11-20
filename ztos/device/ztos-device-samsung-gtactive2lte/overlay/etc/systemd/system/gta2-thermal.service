@@ -1,0 +1,14 @@
+[Unit]
+Description=gta2: CPU at its top OPP (1794 MHz boost), step down from 90 C
+# the same script as the Ubuntu image (outputs/gta2-thermal). It owns
+# scaling_max_freq, so zrnperfd is masked by layer.sh while this runs.
+After=sysinit.target
+
+[Service]
+ExecStart=/usr/local/sbin/gta2-thermal
+Restart=always
+RestartSec=5
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

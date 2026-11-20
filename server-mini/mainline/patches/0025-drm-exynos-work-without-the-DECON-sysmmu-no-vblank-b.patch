@@ -1,0 +1,97 @@
+From 5012e5dc35bb40c5285d636c55ae91124896e290 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:05:18 +0300
+Subject: [PATCH 25/26] drm/exynos: work without the DECON sysmmu; no vblank
+ before bind
+
+Without an IOMMU on the display controller (sysmmu disabled in the device
+tree), exynos_drm_register_dma() failed with -ENODEV because
+CONFIG_EXYNOS_IOMMU is set. Use physical DMA for sub devices that have no
+IOMMU. The bootloader leaves DECON scanning out with its frame interrupt
+enabled, so a failed bind left the IRQ handler calling
+drm_crtc_handle_vblank() on a NULL crtc: check ctx->crtc and clear
+ctx->drm_dev on bind failure.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ arch/arm64/boot/dts/exynos/Makefile        | 4 +++-
+ drivers/gpu/drm/exynos/exynos7_drm_decon.c | 6 ++++--
+ drivers/gpu/drm/exynos/exynos_drm_dma.c    | 8 ++++++--
+ 3 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/Makefile b/arch/arm64/boot/dts/exynos/Makefile
+index 0d2d31278..487993d88 100644
+--- a/arch/arm64/boot/dts/exynos/Makefile
++++ b/arch/arm64/boot/dts/exynos/Makefile
+@@ -10,7 +10,9 @@ dtb-$(CONFIG_ARCH_EXYNOS) += \
+ 	exynos7870-a2corelte.dtb	\
+ 	exynos7870-gtactive2lte.dtb	\
+ 	exynos7870-gtactive2lte-safe2.dtb	\
+-	exynos7870-gtactive2lte-safe3.dtb	\
++	exynos7870-gtactive2lte-safe3.dtb \
++	exynos7870-gtactive2lte-safe3g.dtb \
++	exynos7870-gtactive2lte-safe5g.dtb	\
+ 	exynos7870-gtactive2lte-safe4.dtb	\
+ 	exynos7870-gtactive2lte-safe5.dtb	\
+ 	exynos7870-j6lte.dtb		\
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index b8d9b7251..640a32eea 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -597,8 +597,8 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
+ 	if (val & clear_bit)
+ 		writel(clear_bit, ctx->regs + VIDINTCON1);
+ 
+-	/* check the crtc is detached already from encoder */
+-	if (!ctx->drm_dev)
++	/* check the crtc is detached already from encoder (or bind failed) */
++	if (!ctx->drm_dev || !ctx->crtc)
+ 		goto out;
+ 
+ 	/* check if crtc and vblank have been initialized properly */
+@@ -629,6 +629,8 @@ static int decon_bind(struct device *dev, struct device *master, void *data)
+ 	ret = decon_ctx_initialize(ctx, drm_dev);
+ 	if (ret) {
+ 		DRM_DEV_ERROR(dev, "decon_ctx_initialize failed.\n");
++		/* the IRQ is live from probe (the bootloader leaves DECON scanning out) */
++		ctx->drm_dev = NULL;
+ 		return ret;
+ 	}
+ 
+diff --git a/drivers/gpu/drm/exynos/exynos_drm_dma.c b/drivers/gpu/drm/exynos/exynos_drm_dma.c
+index 6a6761935..8950387b9 100644
+--- a/drivers/gpu/drm/exynos/exynos_drm_dma.c
++++ b/drivers/gpu/drm/exynos/exynos_drm_dma.c
+@@ -106,6 +106,10 @@ int exynos_drm_register_dma(struct drm_device *drm, struct device *dev,
+ 	if (!IS_ENABLED(CONFIG_EXYNOS_IOMMU))
+ 		return 0;
+ 
++	/* a sub device without an IOMMU (e.g. sysmmu disabled in DT) uses physical DMA */
++	if (!device_iommu_mapped(dev))
++		return 0;
++
+ 	if (!priv->mapping) {
+ 		void *mapping = NULL;
+ 
+@@ -126,7 +130,7 @@ int exynos_drm_register_dma(struct drm_device *drm, struct device *dev,
+ void exynos_drm_unregister_dma(struct drm_device *drm, struct device *dev,
+ 			       void **dma_priv)
+ {
+-	if (IS_ENABLED(CONFIG_EXYNOS_IOMMU))
++	if (IS_ENABLED(CONFIG_EXYNOS_IOMMU) && device_iommu_mapped(dev))
+ 		drm_iommu_detach_device(drm, dev, dma_priv);
+ }
+ 
+@@ -134,7 +138,7 @@ void exynos_drm_cleanup_dma(struct drm_device *drm)
+ {
+ 	struct exynos_drm_private *priv = drm->dev_private;
+ 
+-	if (!IS_ENABLED(CONFIG_EXYNOS_IOMMU))
++	if (!IS_ENABLED(CONFIG_EXYNOS_IOMMU) || !priv->mapping)
+ 		return;
+ 
+ 	arm_iommu_release_mapping(priv->mapping);
+-- 
+2.43.0
+

@@ -1,0 +1,9 @@
+# STM FTS8 touchscreen (i2c 7-0049 on vendor; mainline driver TOUCHSCREEN_STM_FTS8).
+# libinput reads LIBINPUT_CALIBRATION_MATRIX; wlroots/ztMETRO then get corrected
+# coordinates. Default: identity, because the digitizer is believed to be in the
+# user's frame already while only the panel is mounted 180 deg (UNVERIFIED).
+# If taps land mirrored (top-left tap hits bottom-right), use the 180 deg matrix:
+#   ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 -1 1"
+# Prefer fixing it in the DT instead (touchscreen-inverted-x; touchscreen-inverted-y;).
+# The input device name below is UNVERIFIED: check with `libinput list-devices`.
+ACTION=="add|change", KERNEL=="event*", SUBSYSTEM=="input", ATTRS{name}=="*fts*", ENV{ID_INPUT_TOUCHSCREEN}="1", ENV{LIBINPUT_CALIBRATION_MATRIX}="1 0 0 0 1 0"

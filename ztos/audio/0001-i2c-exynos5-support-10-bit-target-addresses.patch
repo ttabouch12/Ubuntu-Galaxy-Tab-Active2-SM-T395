@@ -1,0 +1,57 @@
+From ad0fd5d4b4c19dd36b72e4b2bb6a3284dd51dd55 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:01:48 +0300
+Subject: [PATCH] i2c: exynos5: support 10-bit target addresses
+
+Set HSI2C_10BIT_ADDR_MODE in I2C_CONF for messages with I2C_M_TEN and
+advertise I2C_FUNC_10BIT_ADDR. The Exynos7870 PMIC bus carries the
+COD3026X audio codec at 10-bit address 0x004.
+
+Untested on hardware (compile-tested only).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ drivers/i2c/busses/i2c-exynos5.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/i2c/busses/i2c-exynos5.c b/drivers/i2c/busses/i2c-exynos5.c
+index 9c1c5f3c0..9bf270f36 100644
+--- a/drivers/i2c/busses/i2c-exynos5.c
++++ b/drivers/i2c/busses/i2c-exynos5.c
+@@ -710,6 +710,7 @@ static void exynos5_i2c_message_start(struct exynos5_i2c *i2c, int stop)
+ 	u32 int_en = 0;
+ 	u32 i2c_auto_conf = 0;
+ 	u32 i2c_addr = 0;
++	u32 conf;
+ 	u32 fifo_ctl;
+ 	unsigned long flags;
+ 	unsigned short trig_lvl;
+@@ -751,6 +752,14 @@ static void exynos5_i2c_message_start(struct exynos5_i2c *i2c, int stop)
+ 
+ 	writel(i2c_addr, i2c->regs + HSI2C_ADDR);
+ 
++	/* 10-bit target addresses (e.g. the COD3026X codec inside the Exynos7870 PMIC) */
++	conf = readl(i2c->regs + HSI2C_CONF);
++	if (i2c->msg->flags & I2C_M_TEN)
++		conf |= HSI2C_10BIT_ADDR_MODE;
++	else
++		conf &= ~HSI2C_10BIT_ADDR_MODE;
++	writel(conf, i2c->regs + HSI2C_CONF);
++
+ 	writel(fifo_ctl, i2c->regs + HSI2C_FIFO_CTL);
+ 	writel(i2c_ctl, i2c->regs + HSI2C_CTL);
+ 
+@@ -875,7 +884,8 @@ static int exynos5_i2c_xfer_atomic(struct i2c_adapter *adap,
+ 
+ static u32 exynos5_i2c_func(struct i2c_adapter *adap)
+ {
+-	return I2C_FUNC_I2C | (I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
++	return I2C_FUNC_I2C | I2C_FUNC_10BIT_ADDR |
++	       (I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
+ }
+ 
+ static const struct i2c_algorithm exynos5_i2c_algorithm = {
+-- 
+2.43.0
+

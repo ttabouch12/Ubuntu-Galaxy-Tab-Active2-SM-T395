@@ -31,12 +31,15 @@ if [ $n -gt 2 ]; then
   echo 0 > $T; mv /data/extlinux/extlinux.conf /data/extlinux/extlinux.conf.failed; sync; umount /data; reboot -f
 fi
 # mainline uses its OWN copy of the system (a 6.x boot must never touch the 3.18 one)
-R=/data/gta2srv/ml/rootfs.img
-[ -f $R ] || fail "no $R (copy /data/gta2srv/rootfs.img there)"
-mount -o loop,noatime $R /newroot || fail "rootfs mount failed"
-# files in /data/gta2srv/ml/inject/ are copied over the system on every mainline boot (fixes without loop mounts)
-if [ -d /data/gta2srv/ml/inject ]; then
-  for d in /data/gta2srv/ml/inject/*; do [ -e "$d" ] && cp -a "$d" /newroot/ 2>/dev/kmsg; done; k "inject applied"
+# gta2.sys=<name> on the kernel command line picks /data/gta2srv/<name>/rootfs.img (default ml = Ubuntu)
+SYS=ml; for a in $(cat /proc/cmdline); do case $a in gta2.sys=*) SYS=${a#gta2.sys=} ;; esac; done
+case $SYS in *[!a-z0-9_-]*|'') SYS=ml ;; esac
+R=/data/gta2srv/$SYS/rootfs.img; k "system: $SYS"
+[ -f $R ] || fail "no $R"
+mount -o loop,noatime,commit=30 $R /newroot || fail "rootfs mount failed"
+# files in /data/gta2srv/<sys>/inject/ are copied over the system on every mainline boot (fixes without loop mounts)
+if [ -d /data/gta2srv/$SYS/inject ]; then
+  for d in /data/gta2srv/$SYS/inject/*; do [ -e "$d" ] && cp -a "$d" /newroot/ 2>/dev/kmsg; done; k "inject applied"
 fi
 mkdir -p /newroot/userdata; mount --move /data /newroot/userdata
 mount --move /dev /newroot/dev; umount /proc /sys 2>/dev/null

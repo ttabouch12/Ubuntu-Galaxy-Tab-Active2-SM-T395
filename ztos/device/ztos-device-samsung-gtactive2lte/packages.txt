@@ -1,0 +1,23 @@
+# ztOS on the Galaxy Tab Active2 (gtactive2lte): Arch Linux ARM packages on top
+# of the GSI. The kernel is ours (extlinux.conf on USERDATA), never a package.
+
+# QCA9377: ath10k (Wi-Fi, ath10k/QCA9377/hw1.0/) and hci_qca (Bluetooth,
+# qca/rampatch_00230302.bin + nvm_00230302.bin). Arch split linux-firmware in
+# 2025; build-rootfs.sh falls back to "linux-firmware" if this name is unknown.
+linux-firmware-atheros
+
+# Bluetooth controller, UART attachment, management (btmgmt for gta2-bt-addr)
+bluez
+bluez-utils
+
+# bring-up tools: KMS/GPU checks (modetest from libdrm, eglinfo from mesa-utils,
+# kmscube), input (evtest; `libinput list-devices` is in libinput). build-rootfs.sh
+# installs this list one package at a time and skips a name the mirror lacks.
+libdrm
+mesa-utils
+kmscube
+evtest
+i2c-tools
+
+# r5 perf (handoff/ztos/OPTIMIZE.md 2.1): zram swap, no eMMC swap
+zram-generator

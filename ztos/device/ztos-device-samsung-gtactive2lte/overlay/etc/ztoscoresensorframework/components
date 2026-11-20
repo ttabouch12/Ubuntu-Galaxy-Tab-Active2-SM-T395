@@ -1,0 +1,16 @@
+# ztOSCoreSensorFramework: every piece of hardware support this system brings
+# itself. kind|id|argument|title, in the order they are started.
+#
+#   module   a kernel module with no service of its own (id: its name in
+#            /sys/module; argument: what modprobe is given)
+#   unit     a systemd unit that keeps its own process alive
+#   session  a program of the user's session: watched, not started
+#
+# gtactive2lte (Galaxy Tab Active2): the GSI list is the Galaxy S9's. Left out
+# here because this tablet's mainline kernel has none of them:
+#   zrn-led, zrn-haptic, zrn-hotplug (S9 modules; all 8 A53 stay online anyway),
+#   ztoscirrusaudio (S9 Cirrus amp), ztoscsf-sensorhub / ztoscsf-sensord (Samsung
+#   SSP sensor hub, no driver), ztoscorenetworking-modem (Shannon modem, no
+#   driver), zrnperfd (S9 tuning; gta2-perf / gta2-thermal own cpufreq here).
+unit|ztoscorenetworking.service||ztOSCoreNetworking: calls, messages, data
+session|ztapps||App list

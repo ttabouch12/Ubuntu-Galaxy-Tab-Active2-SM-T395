@@ -1,0 +1,4 @@
+# SM5705: a charger in or out, the battery full. Nothing to set on this tablet yet
+# (starlte's zrn-charge picks the input limit by charger type); ztos-iald polls
+# Power1 every 10 s anyway. Kept as the hook: uncomment once a charge helper exists.
+#ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="sm5705-charger", RUN+="/usr/bin/systemctl start --no-block gta2-charge.service"

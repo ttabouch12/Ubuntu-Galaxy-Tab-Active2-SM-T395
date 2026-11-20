@@ -1,0 +1,14 @@
+#!/bin/sh
+# QCA9377 over hci_uart (qcom,qca9377-bt): without an NVM BD address the controller
+# comes up "unconfigured" (hci_qca sets HCI_QUIRK_USE_BDADDR_PROPERTY and the DT has
+# no local-bd-address). Give it a stable locally-administered address from the
+# machine id, as starlte's zrn-bluetooth-addr does. UNVERIFIED on this tablet.
+set -eu
+id=$(cat /etc/machine-id)
+addr=$(printf '02:%s:%s:%s:%s:%s' $(echo "$id" | cut -c1-10 | sed 's/../& /g'))
+for i in $(seq 1 20); do
+	btmgmt info 2>/dev/null | grep -q '^hci0' && break
+	sleep 1
+done
+btmgmt --index 0 public-addr "$addr" || true
+btmgmt --index 0 power on || true

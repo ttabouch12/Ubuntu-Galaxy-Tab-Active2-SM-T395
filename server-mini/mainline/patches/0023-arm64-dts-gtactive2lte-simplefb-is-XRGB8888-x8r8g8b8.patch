@@ -1,0 +1,101 @@
+From 11d9d181a854f0970418d5a4b30f9f4706138c34 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 13:00:03 +0300
+Subject: [PATCH 23/26] arm64: dts: gtactive2lte: simplefb is XRGB8888
+ (x8r8g8b8)
+
+The boot firmware leaves DECON scanning out XRGB8888; declaring
+x8b8g8r8 made simpledrm swap red and blue.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts  | 2 +-
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe2.dts | 2 +-
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3.dts | 2 +-
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe4.dts | 2 +-
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5.dts | 2 +-
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts       | 2 +-
+ 6 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts
+index 14e87f435..1e28c72b5 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts
+@@ -44,7 +44,7 @@ framebuffer@67000000 {
+ 			width = <800>;
+ 			height = <1280>;
+ 			stride = <(800 * 4)>;
+-			format = "x8b8g8r8";
++			format = "x8r8g8b8";
+ 
+ 			/* keep the panel powered until the DRM panel driver owns it */
+ 			power-supply = <&vdd_lcd>;
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe2.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe2.dts
+index 8d2464e20..d5c10428b 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe2.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe2.dts
+@@ -44,7 +44,7 @@ framebuffer@67000000 {
+ 			width = <800>;
+ 			height = <1280>;
+ 			stride = <(800 * 4)>;
+-			format = "x8b8g8r8";
++			format = "x8r8g8b8";
+ 
+ 			/* keep the panel powered until the DRM panel driver owns it */
+ 			power-supply = <&vdd_lcd>;
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3.dts
+index 9ed2febbc..e2060b888 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3.dts
+@@ -44,7 +44,7 @@ framebuffer@67000000 {
+ 			width = <800>;
+ 			height = <1280>;
+ 			stride = <(800 * 4)>;
+-			format = "x8b8g8r8";
++			format = "x8r8g8b8";
+ 
+ 			/* keep the panel powered until the DRM panel driver owns it */
+ 			power-supply = <&vdd_lcd>;
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe4.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe4.dts
+index 1d7766822..2cb61db13 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe4.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe4.dts
+@@ -44,7 +44,7 @@ framebuffer@67000000 {
+ 			width = <800>;
+ 			height = <1280>;
+ 			stride = <(800 * 4)>;
+-			format = "x8b8g8r8";
++			format = "x8r8g8b8";
+ 
+ 			/* keep the panel powered until the DRM panel driver owns it */
+ 			power-supply = <&vdd_lcd>;
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5.dts
+index c0a448d71..60dbaf478 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5.dts
+@@ -44,7 +44,7 @@ framebuffer@67000000 {
+ 			width = <800>;
+ 			height = <1280>;
+ 			stride = <(800 * 4)>;
+-			format = "x8b8g8r8";
++			format = "x8r8g8b8";
+ 
+ 			/* keep the panel powered until the DRM panel driver owns it */
+ 			power-supply = <&vdd_lcd>;
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+index 7b9d0b126..3eb929227 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+@@ -44,7 +44,7 @@ framebuffer@67000000 {
+ 			width = <800>;
+ 			height = <1280>;
+ 			stride = <(800 * 4)>;
+-			format = "x8b8g8r8";
++			format = "x8r8g8b8";
+ 
+ 			/* keep the panel powered until the DRM panel driver owns it */
+ 			power-supply = <&vdd_lcd>;
+-- 
+2.43.0
+

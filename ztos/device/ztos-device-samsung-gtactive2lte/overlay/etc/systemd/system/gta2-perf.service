@@ -1,0 +1,9 @@
+[Unit]
+Description=gta2: CPU/memory tuning (schedutil 2 ms, 1794 MHz cap, 900 MHz floor, MGLRU)
+After=sysinit.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gta2-perf
+[Install]
+WantedBy=multi-user.target
