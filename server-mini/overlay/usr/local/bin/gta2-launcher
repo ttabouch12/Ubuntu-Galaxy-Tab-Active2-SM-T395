@@ -170,7 +170,7 @@ saver = Saver()
 threading.Thread(target=keys, daemon=True).start()
 W = r.winfo_screenwidth()
 TERM = "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0f1115' -fg '#eef1f6' -e bash -l"
-PANEL = 'pkill -f "[s]urf -F"; surf -F '  # web panel full screen; HOME closes it
+PANEL = 'pkill -x surf; exec surf -F '  # web panel full screen; HOME closes it (pkill -x: never matches this shell)
 TILES = (('▣', 'Second screen', 'Moonlight', lambda: run('gta2-moonlight')),
          ('›_', 'Terminal', 'bash', lambda: run(TERM + ' & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard')),
          ('docker', 'Docker', 'Portainer', lambda: run('gta2-docker')),
