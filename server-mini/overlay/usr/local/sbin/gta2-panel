@@ -487,6 +487,9 @@ class H(BaseHTTPRequestHandler):
         return None
 
     def authed(self):
+        # the tablet's own screen (App store / Dashboard tiles) talks to 127.0.0.1: no login there
+        if self.ip() in ('127.0.0.1', '::1', '::ffff:127.0.0.1'):
+            return True
         t = self.token()
         return bool(t) and t in sessions()
 

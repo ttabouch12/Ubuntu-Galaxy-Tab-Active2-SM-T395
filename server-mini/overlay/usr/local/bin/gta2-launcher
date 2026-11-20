@@ -80,7 +80,7 @@ def keys():
 def home():  # HOME: close Portainer (big), hide the keyboard, show the launcher.
     # ("[s]urf" so pkill -f does not match the shell running this command line)
     # (xdotool mouseup: un-sticks a mouse button left pressed by a synthetic event, which blocks all touch input)
-    run('xdotool mouseup 1; pkill -f "[s]urf -F -t https://127.0.0.1:9443"; pkill -x matchbox-keyboa; '
+    run('xdotool mouseup 1; pkill -f "[s]urf -F"; pkill -x matchbox-keyboa; '
         'xdotool search --classname "^gta2-launcher$" windowactivate')
 
 
@@ -170,12 +170,15 @@ saver = Saver()
 threading.Thread(target=keys, daemon=True).start()
 W = r.winfo_screenwidth()
 TERM = "xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0f1115' -fg '#eef1f6' -e bash -l"
+PANEL = 'pkill -f "[s]urf -F"; surf -F '  # web panel full screen; HOME closes it
 TILES = (('▣', 'Second screen', 'Moonlight', lambda: run('gta2-moonlight')),
          ('›_', 'Terminal', 'bash', lambda: run(TERM + ' & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard')),
          ('docker', 'Docker', 'Portainer', lambda: run('gta2-docker')),
          ('▤', 'System', 'monitor', lambda: app('gta2-sysinfo', 'gta2-sysinfo')),
          ('⇅', 'Files', 'share', lambda: app('gta2-settings', 'gta2-settings --tab share')),
          ('◉', 'Kiosk', 'web page', lambda: run('gta2-kiosk')),
+         ('▦', 'App store', 'one-tap apps', lambda: run(PANEL + '"http://127.0.0.1/#store"')),
+         ('◎', 'Dashboard', 'web panel', lambda: run(PANEL + '"http://127.0.0.1/"')),
          ('⚙', 'Settings', '', lambda: app('gta2-settings', 'gta2-settings')),
          ('power', 'Power', 'reboot · off', lambda: run('gta2-settings --power')))
 
@@ -219,7 +222,7 @@ def setcard(k, text, frac):
 # ---- app tiles
 grid = tk.Frame(r, bg=BG); grid.pack(fill='both', expand=True, padx=20, pady=8)
 TW = (W - 40 - 12) // 2
-TH = 206
+TH = 166
 for i, (ic, name, hint, cmd) in enumerate(TILES):
     c = tk.Canvas(grid, width=TW, height=TH, bg=BG, highlightthickness=0, bd=0, cursor='hand2')
     c.grid(row=i // 2, column=i % 2, padx=6, pady=6)
@@ -268,7 +271,9 @@ def tick():
     setcard('BATTERY', cap + ('%' if cap.isdigit() else '') + (' ⚡' if st == 'Charging' else ''), int(cap) / 100 if cap.isdigit() else 0)
     ips = sh("ip -4 -o addr | awk '$2!=\"lo\" && $2!~/^(docker|veth|br-)/{split($4,a,\"/\"); printf \"%s %s   \", $2, a[1]}'")
     wl = sh("nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2")
-    chips.config(text=(('Wi-Fi  ' + wl + '     ') if wl else 'Wi-Fi  off     ') + ips)
+    wip = sh("ip -4 -o addr show wlan0 2>/dev/null | awk '{split($4,a,\"/\"); print a[1]; exit}'")
+    chips.config(text=(('Wi-Fi  ' + wl + '     ') if wl else 'Wi-Fi  off     ') + ips +
+                 ('\nWeb dashboard  http://%s/   (phone or PC on the same Wi-Fi, gta2 password)' % wip if wip else ''))
     r.after(3000, tick)
 
 
