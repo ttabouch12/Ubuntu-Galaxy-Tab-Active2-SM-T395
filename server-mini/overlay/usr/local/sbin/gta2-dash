@@ -57,12 +57,14 @@ def api():
     cpu = [int(rd(p, '0')) // 1000 for p in sorted(glob.glob('/sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq'))]
     try: net = json.load(open('/run/gta2/netmon.json'))
     except Exception: net = None
+    try: router = json.load(open('/run/gta2/router.json'))  # gta2-router (Zyxel WAN stats), optional
+    except Exception: router = None
     dk = sh("docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null")
     return {'host': socket.gethostname(), 'time': time.strftime('%H:%M'), 'date': time.strftime('%A %d %B'),
             'uptime': int(float(rd('/proc/uptime', '0').split()[0])), 'load': rd('/proc/loadavg').split()[:3],
             'mem': [tot - av, tot], 'temp': int(temp) // 1000 if temp.isdigit() else None, 'cpu_mhz': cpu,
             'battery': {'pct': int(rd(cap, '0') or 0), 'status': rd(bdir + '/status'), 'plugged': rd(chg, '0') == '1'} if cap else None,
-            'disks': disks, 'pihole': pihole(), 'net': net,
+            'disks': disks, 'pihole': pihole(), 'net': net, 'router': router,
             'containers': [dict(zip(('name', 'status'), (l.split('|') + [''])[:2])) for l in dk.splitlines()],
             'wallpaper': bool(wallpaper())}
 
@@ -86,7 +88,7 @@ h1{font-size:64px;margin:0;font-weight:700;letter-spacing:-1px}.sub{color:#b6c0c
 .c{background:rgba(22,27,34,.62);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:12px 14px}
 .k{color:#9aa7b4;font-size:12px;text-transform:uppercase;letter-spacing:.5px}.v{font-size:26px;font-weight:700;margin-top:2px}.s{font-size:12px;color:#9aa7b4}
 .b{height:5px;background:rgba(255,255,255,.12);border-radius:3px;margin-top:7px}.b i{display:block;height:5px;border-radius:3px;background:#3b8eea}
-.sec{color:#cfd8e3;font-weight:700;margin:14px 2px 6px;font-size:13px;text-transform:uppercase;letter-spacing:.8px}
+.sec{color:#7cc4ff;font-weight:700;margin:14px 2px 6px;font-size:13px;text-transform:uppercase;letter-spacing:.8px}
 svg{width:100%;height:60px;display:block;margin-top:6px}button{background:#3b8eea;color:#fff;border:0;border-radius:8px;padding:6px 10px;font-weight:700}
 table{width:100%;border-collapse:collapse}td{padding:5px 2px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06)}
 .ok{color:#56d364}.bad{color:#ff7b72}
@@ -94,32 +96,129 @@ table{width:100%;border-collapse:collapse}td{padding:5px 2px;font-size:13px;bord
 <div class=top><div><h1 id=time>--:--</h1><div class=sub id=sub></div></div><div class="pill" id=net>…</div></div>
 <div class=sec>Pi-hole</div><div class="g g3" id=ph></div>
 <div class=sec>Internet</div><div class=g id=inet></div>
-<div class=c><div class=k>Traffic, last 3 h (down / up)</div><svg id=spark viewBox="0 0 300 60" preserveAspectRatio=none></svg></div>
+<div class=g><div class=c style="border-top:3px solid #e3b341"><div class=k style="color:#e3b341">Latency to 1.1.1.1, last 3 h <span id=latmx></span></div><svg id=lats viewBox="0 0 300 60" preserveAspectRatio=none></svg></div>
+<div class=c style="border-top:3px solid #3b8eea"><div class=k style="color:#3b8eea">Speed tests, every 15 min (down / up) <span id=spmx></span></div><svg id=sps viewBox="0 0 300 60" preserveAspectRatio=none></svg></div></div>
+<div class=c style="border-top:3px solid #22d3ee"><div class=k style="color:#22d3ee">Traffic, last 3 h (down / up)</div><svg id=spark viewBox="0 0 300 60" preserveAspectRatio=none></svg></div>
 <div class=sec>Tablet</div><div class="g g3" id=sys></div>
 <div class=g><div class=c><div class=k>Containers</div><table id=ct></table></div><div class=c><div class=k>Recent outages</div><table id=out></table></div></div>
 </div><script>
 const $=id=>document.getElementById(id),f=(n,d=0)=>n==null?'–':Number(n).toLocaleString(undefined,{maximumFractionDigits:d});
-const card=(k,v,s='',pct)=>`<div class=c><div class=k>${k}</div><div class=v>${v}</div><div class=s>${s}</div>${pct!=null?`<div class=b><i style="width:${Math.min(100,pct)}%"></i></div>`:''}</div>`;
+const card=(k,v,s='',pct,col='#3b8eea')=>`<div class=c style="border-top:3px solid ${col};background:linear-gradient(160deg,${col}33,rgba(22,27,34,.66) 60%)"><div class=k style="color:${col}">${k}</div><div class=v>${v}</div><div class=s>${s}</div>${pct!=null?`<div class=b><i style="width:${Math.min(100,pct)}%;background:${col}"></i></div>`:''}</div>`;
+const lvl=(v,a,b)=>v==null?'#8e9aaf':v<a?'#56d364':v<b?'#e3b341':'#ff7b72';
 const ago=t=>{const s=Math.floor(Date.now()/1000-t);return s<90?s+' s ago':s<5400?Math.round(s/60)+' min ago':Math.round(s/3600)+' h ago'};
 const dur=s=>s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
 async function tick(){try{const d=await (await fetch('/api',{cache:'no-store'})).json();
 $('time').textContent=d.time;const u=d.uptime;$('sub').textContent=`${d.date} · ${d.host} · up ${Math.floor(u/86400)}d ${Math.floor(u%86400/3600)}h`;
 if(d.wallpaper&&!document.body.dataset.wp){document.body.style.backgroundImage='url(/wallpaper)';document.body.dataset.wp=1}
-const p=d.pihole;$('ph').innerHTML=p?card('Blocked',f(p.percent,1)+' %','of all queries today',p.percent)+card('Total queries',f(p.total),`${f(p.clients)} active clients`)+card('Queries blocked',f(p.blocked),`${f(p.domains)} domains on blocklists`):card('Pi-hole','offline','not reachable on :8083');
+const p=d.pihole;$('ph').innerHTML=p?card('Blocked',f(p.percent,1)+' %','of all queries today',p.percent,'#ff6b9d')+card('Total queries',f(p.total),`${f(p.clients)} active clients`,null,'#a78bfa')+card('Queries blocked',f(p.blocked),`${f(p.domains)} domains on blocklists`,null,'#fb923c'):card('Pi-hole','offline','not reachable on :8083');
 const n=d.net;if(n){const on=n.online;$('net').className='pill'+(on?'':' off');$('net').textContent=on?'● Online':'● Offline'+(n.down_since?' for '+dur(Math.floor(Date.now()/1000)-n.down_since):'');
 const L=n.lat,sp=(n.speed||[]).slice(-1)[0];
-$('inet').innerHTML=card('Latency',`${f(L['1.1.1.1'],0)} ms`,`router ${f(L.router,0)} ms · 8.8.8.8 ${f(L['8.8.8.8'],0)} ms`)+
-card('Live traffic',`↓ ${f(n.rate.rx,1)} <span class=s>Mbit/s</span>`,`↑ ${f(n.rate.tx,1)} Mbit/s`)+
-card('Speed test',sp?`↓ ${f(sp.down,0)} <span class=s>/ ↑ ${f(sp.up,0)} Mbit/s</span>`:(n.testing?'testing…':'–'),(sp?`ping ${f(sp.ping,0)} ms · ${ago(sp.t)} `:'')+`<button onclick="fetch('/speedtest',{method:'POST'});this.textContent='started'">Run now</button>`)+
-card('Average speed (last tests)',(()=>{const a=(n.speed||[]).filter(x=>x.down);return a.length?`↓ ${f(a.reduce((s,x)=>s+x.down,0)/a.length,0)} <span class=s>Mbit/s</span>`:'–'})(),`${(n.speed||[]).length} tests kept`);
+$('inet').innerHTML=card('Latency',`${f(L['1.1.1.1'],0)} ms`,`router ${f(L.router,0)} ms · 8.8.8.8 ${f(L['8.8.8.8'],0)} ms`,null,lvl(L['1.1.1.1'],30,80))+
+card('Live traffic',`↓ ${f(n.rate.rx,1)} <span class=s>Mbit/s</span>`,`↑ ${f(n.rate.tx,1)} Mbit/s`,null,'#22d3ee')+
+card('Speed test',sp?`↓ ${f(sp.down,0)} <span class=s>/ ↑ ${f(sp.up,0)} Mbit/s</span>`:(n.testing?'testing…':'–'),(sp?`ping ${f(sp.ping,0)} ms · ${ago(sp.t)} `:'')+`<button onclick="fetch('/speedtest',{method:'POST'});this.textContent='started'">Run now</button>`,null,'#3b8eea')+
+card('Average speed (last 24 h)',(()=>{const a=(n.speed||[]).filter(x=>x.down);return a.length?`↓ ${f(a.reduce((s,x)=>s+x.down,0)/a.length,0)} <span class=s>Mbit/s</span>`:'–'})(),`${(n.speed||[]).length} tests kept`,null,'#34d399');
 const h=n.hist||[];if(h.length>1){const mx=Math.max(1,...h.map(x=>Math.max(x[2]||0,x[3]||0))),X=i=>i*300/(h.length-1),Y=v=>58-56*(v||0)/mx;
 $('spark').innerHTML=`<polyline fill=none stroke="#3b8eea" stroke-width=2 points="${h.map((x,i)=>X(i)+','+Y(x[2])).join(' ')}"/><polyline fill=none stroke="#56d364" stroke-width=1.5 points="${h.map((x,i)=>X(i)+','+Y(x[3])).join(' ')}"/>`}
+const lh=h.filter(x=>x[1]!=null);if(lh.length>1){const lm=Math.max(5,...lh.map(x=>x[1])),X=i=>i*300/(lh.length-1),Y=v=>58-56*v/lm;
+$('latmx').textContent=`(max ${f(lm,0)} ms)`;$('lats').innerHTML=`<polyline fill=none stroke="#e3b341" stroke-width=2 points="${lh.map((x,i)=>X(i)+','+Y(x[1])).join(' ')}"/>`}
+const st=(n.speed||[]).filter(x=>x.down!=null).slice(-48);if(st.length){const sm=Math.max(1,...st.map(x=>Math.max(x.down,x.up||0))),w=300/st.length;
+$('spmx').textContent=`(max ${f(sm,0)} Mbit/s)`;$('sps').innerHTML=st.map((x,i)=>`<rect x="${i*w+1}" y="${58-56*x.down/sm}" width="${Math.max(1,w/2-1)}" height="${56*x.down/sm}" fill="#3b8eea"/><rect x="${i*w+w/2}" y="${58-56*(x.up||0)/sm}" width="${Math.max(1,w/2-1)}" height="${56*(x.up||0)/sm}" fill="#56d364"/>`).join('')}
 $('out').innerHTML=(n.outages||[]).slice().reverse().map(o=>`<tr><td>${new Date(o.start*1000).toLocaleString()}</td><td class=bad>${dur(o.end-o.start)}</td></tr>`).join('')||'<tr><td class=ok>none recorded</td></tr>'}
-const b=d.battery,m=d.mem;$('sys').innerHTML=card('CPU',`${f(d.temp)} °C`,`load ${d.load.join(' ')} · ${d.cpu_mhz.join('/')} MHz`,d.temp)+card('Memory',`${f(m[0])} MB`,`of ${f(m[1])} MB`,100*m[0]/m[1])+
-(b?card('Battery',b.pct+' %',(b.plugged?'plugged in · ':'')+b.status,b.pct):'')+d.disks.map(x=>card(x.name,`${x.used} GB`,`of ${x.total} GB`,100*x.used/x.total)).join('');
+const b=d.battery,m=d.mem;$('sys').innerHTML=card('CPU',`${f(d.temp)} °C`,`load ${d.load.join(' ')} · ${d.cpu_mhz.join('/')} MHz`,d.temp,lvl(d.temp,55,75))+card('Memory',`${f(m[0])} MB`,`of ${f(m[1])} MB`,100*m[0]/m[1],'#a78bfa')+
+(b?card('Battery',b.pct+' %',(b.plugged?'plugged in · ':'')+b.status,b.pct,b.pct>50?'#56d364':b.pct>20?'#e3b341':'#ff7b72'):'')+d.disks.map(x=>card(x.name,`${x.used} GB`,`of ${x.total} GB`,100*x.used/x.total,'#f2a93b')).join('');
 $('ct').innerHTML=d.containers.map(c=>`<tr><td>${c.name}</td><td class=${c.status.startsWith('Up')?'ok':'bad'}>${c.status}</td></tr>`).join('')||'<tr><td>none</td></tr>';
 }catch(e){$('net').textContent='dashboard offline';$('net').className='pill off'}}
 tick();setInterval(tick,5000);
+</script>
+<script>
+/* gta2 router cards (add-on). Fetches /api router block, renders 4 cards in the Internet section.
+   Uses page helper card(k,v,s,pct,col) or st2(k,v,sub,col,frac) when global, else own markup. */
+(function () {
+  var ID = 'gta2-router-cards';
+  var hist = [];
+  function api() {
+    var h = location.port === '8088' ? '' : 'http://' + location.hostname + ':8088';
+    return fetch(h + '/api', { cache: 'no-store' }).then(function (r) { return r.json(); });
+  }
+  function dur(s) {
+    if (s == null) return '\u2013';
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + m + 'm' : m + 'm';
+  }
+  function gb(b) { if (b == null) return '\u2013'; return b >= 1e12 ? (b / 1e12).toFixed(2) + ' TB' : b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(0) + ' MB'; }
+  function f(x) { return x == null ? '\u2013' : (x >= 100 ? x.toFixed(0) : x.toFixed(1)); }
+  function spark(col) {
+    if (hist.length < 2) return '';
+    var max = Math.max.apply(null, hist.concat([1])), w = 120, h = 24;
+    var pts = hist.map(function (v, i) { return (i * w / (hist.length - 1)).toFixed(1) + ',' + (h - v / max * h).toFixed(1); }).join(' ');
+    return '<svg width="' + w + '" height="' + h + '" style="display:block;margin-top:4px"><polyline fill="none" stroke="' + col + '" stroke-width="1.5" points="' + pts + '"/></svg>';
+  }
+  function own(k, v, s, col, frac) {
+    return '<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px 12px;min-width:150px;flex:1">' +
+      '<div style="font-size:12px;opacity:.7">' + k + '</div>' +
+      '<div style="font-size:20px;font-weight:600;color:' + col + '">' + v + '</div>' +
+      '<div style="font-size:11px;opacity:.6">' + (s || '') + '</div>' +
+      (frac != null ? '<div style="height:3px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:6px"><div style="height:3px;width:' + Math.min(100, frac * 100) + '%;background:' + col + ';border-radius:2px"></div></div>' : '') +
+      '</div>';
+  }
+  function mk(k, v, s, col, frac) {
+    try {
+      if (typeof card === 'function') return card(k, v, s, frac == null ? null : frac * 100, col);
+      if (typeof st2 === 'function') return st2(k, v, s, col, frac);
+    } catch (e) {}
+    return own(k, v, s, col, frac);
+  }
+  function anchor() {
+    var els = document.querySelectorAll('h1,h2,h3,h4,.sec,.section-title,.title,summary,div,span');
+    for (var i = 0; i < els.length; i++) {
+      var e = els[i];
+      if (e.children.length === 0 && /^\s*internet\s*$/i.test(e.textContent)) return e;
+    }
+    return null;
+  }
+  function place() {
+    var box = document.getElementById(ID);
+    if (box && document.body.contains(box)) return box;
+    box = document.createElement('div');
+    box.id = ID;
+    box.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin:8px 0';
+    var a = anchor();
+    if (a) {
+      var sib = a.nextElementSibling;
+      (sib && sib.parentNode ? sib.parentNode.insertBefore(box, sib.nextSibling) : a.parentNode.insertBefore(box, a.nextSibling));
+    } else document.body.appendChild(box);
+    return box;
+  }
+  function render(r) {
+    var box = place();
+    if (!r) { box.innerHTML = mk('Router', 'no data', 'gta2-router not running', '#8e9aaf'); return; }
+    if (!r.ok) { box.innerHTML = mk('Router', 'error', r.error || '', '#f87171'); return; }
+    var stale = Date.now() / 1000 - (r.t || 0) > 90 ? ' (stale)' : '';
+    if (r.rx_mbit != null) { hist.push(r.rx_mbit); if (hist.length > 60) hist.shift(); }
+    var ld = r.line_down, lu = r.line_up, D = '\u2193 ', U = ' / \u2191 ';
+    var lat = r.ping_wan == null ? '\u2013' : r.ping_wan.toFixed(1) + ' ms';
+    var latCol = r.ping_wan == null ? '#f87171' : r.ping_wan < 30 ? '#34d399' : r.ping_wan < 80 ? '#fbbf24' : '#f87171';
+    box.innerHTML =
+      mk('Home traffic (router)', D + f(r.rx_mbit) + U + f(r.tx_mbit),
+         'Mbit/s' + stale + ' \u00b7 1h avg ' + D + f(r.avg_rx_1h) + U + f(r.avg_tx_1h) +
+         ' \u00b7 24h peak ' + D + f(r.peak_rx_24h) + U + f(r.peak_tx_24h) + spark('#22d3ee'),
+         '#22d3ee', ld ? (r.rx_mbit || 0) / ld : null) +
+      mk('Data today', D + gb(r.day_rx) + U + gb(r.day_tx),
+         'month ' + D + gb(r.month_rx) + U + gb(r.month_tx) + ' \u00b7 since router boot ' + D + gb(r.rx_total) + U + gb(r.tx_total),
+         '#f472b6', null) +
+      mk('Latency (via router)', lat,
+         (r.ping_host || 'internet') + ' \u00b7 router hop ' + (r.ping_gw == null ? '\u2013' : r.ping_gw.toFixed(1) + ' ms') +
+         ' \u00b7 loss ' + (r.loss_wan == null ? '\u2013' : r.loss_wan.toFixed(0) + '%'),
+         latCol, null) +
+      mk('Devices online', r.clients == null ? '\u2013' : String(r.clients), r.wan_up === false ? 'WAN DOWN' : 'WAN up', '#a78bfa', null) +
+      mk('Router uptime', dur(r.uptime), r.fw || '', '#8e9aaf', null) +
+      mk('Line rate', ld ? ld + ' / ' + lu : '\u2013', 'Mbit/s down / up', '#34d399', null);
+  }
+  function tick() { api().then(function (j) { render(j.router); }).catch(function () {}); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', tick); else setTimeout(tick, 500);
+  setInterval(tick, 5000);
+})();
+
 </script></body></html>'''
 
 
@@ -130,7 +229,7 @@ except Exception:
 meth, path = (req + ['GET', '/'])[:2]
 path = path.split('?')[0]
 if path == '/api':
-    send('200 OK', 'application/json', json.dumps(api()))
+    send('200 OK', 'application/json', json.dumps(api()), 'Access-Control-Allow-Origin: *\r\n')
 elif path == '/wallpaper':
     p = wallpaper()
     if p:

@@ -1,0 +1,14 @@
+#!/bin/sh
+# gta2-router-setup: store the Zyxel router login for the dashboard (root-only file, never printed).
+#   sudo gta2-router-setup
+set -e
+[ "$(id -u)" = 0 ] || { echo "run with sudo"; exit 1; }
+F=/etc/gta2/router.conf
+mkdir -p /etc/gta2
+printf 'Router address [192.168.1.1]: '; read -r ip; ip=${ip:-192.168.1.1}
+printf 'Admin user [admin]: '; read -r user; user=${user:-admin}
+printf 'Admin password (hidden): '; stty -echo; read -r pw; stty echo; echo
+umask 077
+printf 'ROUTER=%s\nUSER=%s\nPASS=%s\n' "$ip" "$user" "$pw" > "$F"
+chmod 600 "$F"; chown root:root "$F"
+echo "Saved to $F (readable by root only)."

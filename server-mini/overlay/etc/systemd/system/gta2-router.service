@@ -1,0 +1,21 @@
+[Unit]
+Description=gta2 Zyxel router stats poller
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/gta2/router.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/gta2-router
+Restart=always
+RestartSec=30
+User=root
+RuntimeDirectory=gta2
+RuntimeDirectoryMode=1777
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

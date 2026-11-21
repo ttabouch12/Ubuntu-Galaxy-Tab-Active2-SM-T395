@@ -8,7 +8,7 @@ import json, os, re, subprocess, time
 
 RUN, VAR = '/run/gta2', '/var/lib/gta2'
 LIVE, STATE, TRIGGER = RUN + '/netmon.json', VAR + '/netmon.json', RUN + '/speedtest.now'
-SPEED_EVERY = 3600  # hourly (Ethernet via dock)
+SPEED_EVERY = 900  # every 15 min (only while Ethernet is up)
 def wired():  # auto test only on Ethernet: heavy load can crash the Wi-Fi firmware
     import glob
     return any(open(p).read().strip() == "up" for p in glob.glob("/sys/class/net/e*/operstate"))
@@ -105,11 +105,11 @@ while True:
         try: os.remove(TRIGGER)
         except OSError: pass
         json.dump({**st, 'testing': True, 'now': int(now)}, open(LIVE + '.tmp', 'w')); os.replace(LIVE + '.tmp', LIVE)
-        st['speed'].append(speedtest()); st['speed'] = st['speed'][-72:]
+        st['speed'].append(speedtest()); st['speed'] = st['speed'][-96:]
         last_speed = time.time()
 
     live = {'now': int(now), 'online': online and down_since is None, 'down_since': down_since, 'lat': lat,
-            'rate': rate, 'rx_total': rx, 'tx_total': tx, 'speed': st['speed'][-24:], 'outages': st['outages'][-10:],
+            'rate': rate, 'rx_total': rx, 'tx_total': tx, 'speed': st['speed'][-96:], 'outages': st['outages'][-10:],
             'hist': [x for x in st['lat'] if x[0] > now - 3 * 3600][::6]}
     json.dump(live, open(LIVE + '.tmp', 'w')); os.replace(LIVE + '.tmp', LIVE)
     if now - last_save > 300:

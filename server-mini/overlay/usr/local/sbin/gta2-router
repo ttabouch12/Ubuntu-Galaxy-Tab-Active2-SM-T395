@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""gta2-router: poll Zyxel EX3501 (DAL web UI, RSA+AES-256-CBC) -> /run/gta2/router.json
+
+Every 15 s: WAN rx/tx bytes -> Mbit/s. Every 60 s: uptime, WAN state, clients, line rate.
+Credentials: /etc/gta2/router.conf (ROUTER=, USER=, PASS=). Never logged or written out.
+
+  gta2-router            run daemon
+  gta2-router --probe    log in once, dump key paths of candidate OIDs (secrets redacted)
+"""
+import base64, collections, json, os, re, signal, subprocess, sys, threading, time
+
+import requests
+from cryptography.hazmat.primitives import padding as sympad, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asympad
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+CONF = '/etc/gta2/router.conf'
+OUT_DIR = '/run/gta2'
+OUT = OUT_DIR + '/router.json'
+FAST, SLOW = 5, 60
+OIDS_SLOW = ['cardpage_status', 'lanhosts']
+OIDS_TRAFFIC = ['Traffic_Status', 'wan_stats', 'Wan_LAN_Traffic']
+USAGE = '/var/lib/gta2/router-usage.json'
+PING_EVERY = 15
+PING_HOST = '1.1.1.1'
+SECRET_RE = re.compile(r'pass|psk|key|secret|token|pin', re.I)
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+
+def read_conf():
+    c = {}
+    with open(CONF) as f:
+        for line in f:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                k, v = line.split('=', 1)
+                c[k.strip()] = v.strip().strip('"').strip("'")
+    return c
+
+
+def b64(b):
+    return base64.b64encode(b).decode()
+
+
+class Zyxel:
+    def __init__(self, host, user, pw):
+        self.base = 'http://' + host
+        self.user, self.pw = user, pw
+        self.s = None
+        self.key = None
+        self.token = None
+
+    # --- crypto (same scheme as warlo/hass-wx3401) ---
+    def _enc(self, obj):
+        iv = os.urandom(32)
+        p = sympad.PKCS7(128).padder()
+        data = p.update(json.dumps(obj).encode()) + p.finalize()
+        e = Cipher(algorithms.AES(self.key), modes.CBC(iv[:16])).encryptor()
+        return iv, e.update(data) + e.finalize()
+
+    def _dec(self, j):
+        if not isinstance(j, dict) or 'content' not in j or 'iv' not in j:
+            return j
+        iv = base64.b64decode(j['iv'])[:16]
+        d = Cipher(algorithms.AES(self.key), modes.CBC(iv)).decryptor()
+        raw = d.update(base64.b64decode(j['content'])) + d.finalize()
+        u = sympad.PKCS7(128).unpadder()
+        raw = u.update(raw) + u.finalize()
+        return json.loads(raw.decode('utf-8', 'replace'))
+
+    # --- session ---
+    def login(self):
+        self.s = requests.Session()
+        self.s.headers['User-Agent'] = 'gta2-router/1'
+        r = self.s.get(self.base + '/getRSAPublickKey', timeout=10)
+        r.raise_for_status()
+        pem = r.json()['RSAPublicKey']
+        pub = serialization.load_pem_public_key(pem.encode())
+        self.key = os.urandom(32)
+        enc_key = pub.encrypt(b64(self.key).encode(), asympad.PKCS1v15())
+        body = {
+            'Input_Account': self.user,
+            'Input_Passwd': b64(self.pw.encode()),
+            'currLang': 'en',
+            'RememberPassword': 0,
+            'SHA512_password': False,
+        }
+        iv, ct = self._enc(body)
+        r = self.s.post(self.base + '/UserLogin', timeout=15,
+                        json={'content': b64(ct), 'key': b64(enc_key), 'iv': b64(iv)})
+        if r.status_code != 200:
+            raise RuntimeError('login failed (HTTP %d)' % r.status_code)
+        j = self._dec(r.json())
+        if str(j.get('result', '')).upper() not in ('ZCFG_SUCCESS', 'SUCCESS'):
+            raise RuntimeError('login failed (%s)' % j.get('result', '?'))
+        self.token = j.get('sessionkey') or j.get('sessionKey')
+        if not self.token:
+            raise RuntimeError('login failed (no sessionkey)')
+
+    def logout(self):
+        if self.s and self.token:
+            try:
+                self.s.post(self.base + '/cgi-bin/UserLogout', timeout=5,
+                            headers={'CSRFToken': str(self.token)})
+            except Exception:
+                pass
+        self.s = self.token = None
+
+    def dal(self, oid):
+        if not self.token:
+            self.login()
+        r = self.s.get(self.base + '/cgi-bin/DAL', params={'oid': oid}, timeout=10,
+                       headers={'CSRFToken': str(self.token)})
+        if r.status_code in (401, 403):
+            self.token = None
+            raise PermissionError('session expired')
+        r.raise_for_status()
+        j = self._dec(r.json())
+        res = str(j.get('result', 'ZCFG_SUCCESS')).upper()
+        if 'SUCCESS' not in res:
+            raise LookupError('%s: %s' % (oid, res))
+        obj = j.get('Object', j)
+        return obj[0] if isinstance(obj, list) and len(obj) == 1 else obj
+
+
+# --- tolerant field extraction (exact OID layout varies by firmware) ---
+def walk(o, path=''):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield from walk(v, path + '.' + k if path else k)
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            yield from walk(v, '%s[%d]' % (path, i))
+    else:
+        yield path, o
+
+
+def leaf(path):
+    return path.rsplit('.', 1)[-1].split('[')[0]
+
+
+def num(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def first(o, names):
+    names = {n.lower() for n in names}
+    for p, v in walk(o):
+        if leaf(p).lower() in names and v not in (None, ''):
+            return v
+    return None
+
+
+def dicts(o):
+    if isinstance(o, dict):
+        yield o
+        for v in o.values():
+            yield from dicts(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from dicts(v)
+
+
+def is_wan(d):
+    t = ' '.join(str(d.get(k, '')) for k in (
+        'X_ZYXEL_Type', 'Type', 'X_ZYXEL_SrvName', 'Name', 'X_ZYXEL_IfName',
+        'IfName', 'LowerLayers', 'X_ZYXEL_ConnectionType')).lower()
+    if re.search(r'\blan\b|br\d|bridge', t) and 'wan' not in t:
+        return False
+    return bool(re.search(r'wan|ppp|nas|eth4|internet|ipoe|pppoe', t))
+
+
+def wan_bytes(obj):
+    """Return (rx, tx) of the WAN interface from a traffic OID."""
+    # EX3501 PPPoE WAN: real internet counters are in pppIfaceSt (ppp link); pick busiest
+    if isinstance(obj, dict):
+        ppp = [d for d in obj.get('pppIfaceSt') or []
+               if isinstance(d, dict) and num(d.get('BytesReceived'))]
+        if ppp:
+            d = max(ppp, key=lambda d: num(d['BytesReceived']) + (num(d.get('BytesSent')) or 0))
+            return num(d['BytesReceived']), num(d.get('BytesSent')) or 0
+    best = None
+    for d in dicts(obj):
+        rx = num(d.get('BytesReceived', d.get('RxBytes')))
+        tx = num(d.get('BytesSent', d.get('TxBytes')))
+        if rx is None or tx is None:
+            continue
+        score = (1 if is_wan(d) else 0, rx + tx)
+        if best is None or score > best[0]:
+            best = (score, rx, tx)
+    if best is None:
+        raise LookupError('no byte counters')
+    return best[1], best[2]
+
+
+def slow_fields(status, hosts):
+    out = {}
+    up = first(status, ['UpTime', 'Uptime', 'SystemUpTime'])
+    if num(up) is not None:
+        out['uptime'] = num(up)
+    fw = first(status, ['SoftwareVersion', 'FirmwareVersion', 'FwVersion'])
+    if fw:
+        out['fw'] = str(fw)
+    wan_up = None
+    for d in dicts(status):
+        st = d.get('Status', d.get('ConnectionStatus', d.get('LinkStatus')))
+        if st is not None and is_wan(d):
+            s = str(st).lower()
+            wan_up = s in ('up', 'connected', '1', 'true') or (wan_up is True)
+    if wan_up is not None:
+        out['wan_up'] = wan_up
+    # line rate (Mbit/s): Ethernet WAN or DSL/fiber rate keys
+    dn = first(status, ['DownstreamCurrRate', 'DownRate', 'X_ZYXEL_DownstreamRate'])
+    upr = first(status, ['UpstreamCurrRate', 'UpRate', 'X_ZYXEL_UpstreamRate'])
+    if num(dn) and num(upr):
+        k = 1000 if num(dn) > 100000 else 1  # kbit/s -> Mbit/s
+        out['line_down'], out['line_up'] = num(dn) // k, num(upr) // k
+    else:
+        for d in dicts(status):
+            br = num(d.get('CurrentBitRate', d.get('MaxBitRate', d.get('Speed'))))
+            if br and br > 0 and is_wan(d):
+                out['line_down'] = out['line_up'] = br
+                break
+    if hosts is not None:
+        n = 0
+        rows = [d for d in dicts(hosts) if any(k in d for k in ('PhysAddress', 'MACAddress', 'IPAddress'))]
+        for d in rows:
+            a = d.get('Active', d.get('X_ZYXEL_Active', True))
+            if str(a).lower() in ('1', 'true', 'yes', 'up'):
+                n += 1
+        out['clients'] = n
+    return out
+
+
+# --- latency: ping through the router (router has no passive latency stat) ---
+PING = {}
+
+
+def ping(host):
+    try:
+        r = subprocess.run(['ping', '-n', '-q', '-c', '3', '-i', '0.3', '-W', '2', host],
+                           capture_output=True, text=True, timeout=10)
+        loss = re.search(r'([\d.]+)% packet loss', r.stdout)
+        rtt = re.search(r'= [\d.]+/([\d.]+)/', r.stdout)
+        return (float(rtt.group(1)) if rtt else None), (float(loss.group(1)) if loss else 100.0)
+    except Exception:
+        return None, 100.0
+
+
+def pinger(gw, wan):
+    while True:
+        g, _ = ping(gw)
+        w, loss = ping(wan)
+        PING.update(ping_gw=g, ping_wan=w, loss_wan=loss, ping_host=wan)
+        time.sleep(PING_EVERY)
+
+
+# --- usage: daily/monthly volume, persisted across restarts ---
+def load_usage():
+    try:
+        with open(USAGE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_usage(u):
+    os.makedirs(os.path.dirname(USAGE), exist_ok=True)
+    tmp = USAGE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(u, f)
+    os.replace(tmp, USAGE)
+
+
+def add_usage(u, drx, dtx):
+    day, month = time.strftime('%Y-%m-%d'), time.strftime('%Y-%m')
+    if u.get('day') != day:
+        u.update(day=day, day_rx=0, day_tx=0)
+    if u.get('month') != month:
+        u.update(month=month, month_rx=0, month_tx=0)
+    for k, v in (('day_rx', drx), ('month_rx', drx), ('day_tx', dtx), ('month_tx', dtx)):
+        u[k] = u.get(k, 0) + v
+
+
+def window(samples, now, secs):
+    """Average Mbit/s over the last secs from (t, rx, tx) samples."""
+    old = None
+    for t, rx, tx in samples:
+        if now - t <= secs:
+            old = (t, rx, tx)
+            break
+    last = samples[-1]
+    if not old or last[0] - old[0] < 1:
+        return None, None
+    dt = last[0] - old[0]
+    return (round((last[1] - old[1]) * 8 / dt / 1e6, 2), round((last[2] - old[2]) * 8 / dt / 1e6, 2))
+
+
+def write(d):
+    d['t'] = int(time.time())
+    os.makedirs(OUT_DIR, exist_ok=True)
+    try:
+        os.chmod(OUT_DIR, 0o1777)
+    except OSError:
+        pass
+    tmp = OUT + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(d, f)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, OUT)
+
+
+def redact(o):
+    if isinstance(o, dict):
+        return {k: ('***' if SECRET_RE.search(k) else redact(v)) for k, v in o.items()}
+    if isinstance(o, list):
+        return [redact(v) for v in o[:8]]
+    return o
+
+
+def probe(z):
+    z.login()
+    try:
+        for oid in OIDS_SLOW + OIDS_TRAFFIC + ['cardpage_wan', 'WWAN']:
+            try:
+                o = redact(z.dal(oid))
+                print('=== %s' % oid)
+                for p, v in walk(o):
+                    print('  %s = %r' % (p, v))
+            except Exception as e:
+                print('=== %s: %s' % (oid, e))
+            time.sleep(1)
+    finally:
+        z.logout()
+
+
+def main():
+    c = read_conf()
+    z = Zyxel(c.get('ROUTER', '192.168.1.1'), c.get('USER', 'admin'), c['PASS'])
+    del c
+    if '--probe' in sys.argv:
+        return probe(z)
+
+    def bye(*_):
+        try:
+            save_usage(usage)
+        except Exception:
+            pass
+        z.logout()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
+
+    gw = z.base.split('//', 1)[1].split(':')[0]
+    threading.Thread(target=pinger, args=(gw, PING_HOST), daemon=True).start()
+    usage = load_usage()
+    last_save = 0
+    samples = collections.deque()     # (monotonic t, rx_total, tx_total), 24 h
+    rates = collections.deque()       # (monotonic t, rx_mbit, tx_mbit), 24 h
+    state = {'ok': False, 'error': 'starting'}
+    prev = None          # (t, rx, tx)
+    traffic_oid = None
+    last_slow = 0
+    backoff = 0
+    login_fails = 0
+    while True:
+        t0 = time.monotonic()
+        try:
+            if traffic_oid is None:
+                err = None
+                for oid in OIDS_TRAFFIC:
+                    try:
+                        rx, tx = wan_bytes(z.dal(oid))
+                        traffic_oid = oid
+                        break
+                    except (LookupError, ValueError) as e:
+                        err = e
+                if traffic_oid is None:
+                    raise LookupError('no traffic OID (%s)' % err)
+            else:
+                rx, tx = wan_bytes(z.dal(traffic_oid))
+            now = time.monotonic()
+            if samples and (rx < samples[-1][1] or tx < samples[-1][2]):
+                samples.clear()           # counter reset (PPP reconnect / reboot)
+            if prev and now > prev[0] and rx >= prev[1] and tx >= prev[2]:
+                dt = now - prev[0]
+                state['rx_mbit'] = round((rx - prev[1]) * 8 / dt / 1e6, 2)
+                state['tx_mbit'] = round((tx - prev[2]) * 8 / dt / 1e6, 2)
+                rates.append((now, state['rx_mbit'], state['tx_mbit']))
+                add_usage(usage, rx - prev[1], tx - prev[2])
+            prev = (now, rx, tx)
+            samples.append((now, rx, tx))
+            while samples and now - samples[0][0] > 86400:
+                samples.popleft()
+            while rates and now - rates[0][0] > 86400:
+                rates.popleft()
+            for name, secs in (('1m', 60), ('1h', 3600), ('24h', 86400)):
+                a = window(samples, now, secs)
+                state['avg_rx_' + name], state['avg_tx_' + name] = a
+                r = [x for x in rates if now - x[0] <= secs]
+                state['peak_rx_' + name] = max((x[1] for x in r), default=None)
+                state['peak_tx_' + name] = max((x[2] for x in r), default=None)
+            for k in ('day_rx', 'day_tx', 'month_rx', 'month_tx'):
+                state[k] = usage.get(k, 0)
+            if now - last_save > 60:
+                save_usage(usage)
+                last_save = now
+            state['rx_total'], state['tx_total'] = rx, tx
+
+            if now - last_slow >= SLOW:
+                status = z.dal('cardpage_status')
+                try:
+                    hosts = z.dal('lanhosts')
+                except Exception:
+                    hosts = None
+                state.update(slow_fields(status, hosts))
+                last_slow = now
+            state['ok'] = True
+            state.pop('error', None)
+            backoff = login_fails = 0
+        except PermissionError:
+            prev = None  # session expired: re-login once, then treat as error
+            login_fails += 1
+            if login_fails < 2:
+                time.sleep(5)
+                continue
+            state = {'ok': False, 'error': 'session rejected'}
+            z.logout()
+            backoff = 300
+        except Exception as e:
+            msg = str(e)
+            if 'login failed' in msg:
+                login_fails += 1
+            else:
+                msg = type(e).__name__ + ': ' + msg
+            msg = msg.replace(z.pw, '***')[:200]
+            log('error:', msg)
+            state = {'ok': False, 'error': msg}
+            prev = None
+            z.logout()
+            # back off hard on login failures to avoid router lockout
+            backoff = min(900, max(30, backoff * 2)) if login_fails < 3 else 1800
+        out = dict(state)
+        out.update(PING)
+        write(out)
+        time.sleep(max(1, (backoff or FAST) - (time.monotonic() - t0)))
+
+
+if __name__ == '__main__':
+    main()

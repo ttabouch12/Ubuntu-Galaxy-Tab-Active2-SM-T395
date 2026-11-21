@@ -1,0 +1,8 @@
+[Unit]
+Description=gta2: reboot once if the display (DSI) came up dead
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gta2-dsicheck
+[Install]
+WantedBy=multi-user.target

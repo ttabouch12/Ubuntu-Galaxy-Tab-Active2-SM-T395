@@ -95,8 +95,11 @@ function pHome(el) {
   const stats = h('div', {class: 'grid g4'});
   const extra = h('div', {class: 'grid g2', style: 'margin-top:14px'});
   const apps = h('div', {class: 'grid g3'});
-  el.append(head, chips, h('div', {class: 'sec'}, 'System'), stats, extra, h('div', {class: 'sec'}, 'Apps'), apps,
+  const phole = h('div', {class: 'grid g4'}), inet = h('div', {class: 'grid g4'});
+  el.append(head, chips, h('div', {class: 'sec'}, 'Pi-hole'), phole, h('div', {class: 'sec'}, 'Internet'), inet, h('div', {class: 'sec'}, 'System'), stats, extra, h('div', {class: 'sec'}, 'Apps'), apps,
     h('p', {class: 'note', style: 'margin-top:20px'}, 'Terminal: ssh gta2@' + HOST + '   ·   Status page: http://' + HOST + ':8088'));
+  const tint = col => `border-top:3px solid ${col};background:linear-gradient(160deg,${col}30,var(--card) 60%)`;
+  const lvl = (v, a, b) => v == null ? '#8e9aaf' : v < a ? '#38c172' : v < b ? '#f2a93b' : '#ef5a5a';
   every(3000, async () => {
     const s = await api('/api/stats').catch(() => null); if (!s) return;
     $('#hclock').textContent = s.time; $('#hdate').textContent = s.date + ' · ' + s.host;
@@ -105,13 +108,36 @@ function pHome(el) {
     const used = s.mem.total - s.mem.avail;
     const t = s.temps.length ? Math.max(...s.temps.map(x => x.c)) : null;
     const b = s.battery, cap = +(b.capacity || 0), chg = /charg/i.test(b.status || '') && !/dis|not/i.test(b.status || '');
-    const stat = (k, v, sub, frac, col) => h('div', {class: 'card stat'}, h('div', {class: 'k'}, k), h('div', {class: 'v'}, v), frac != null ? bar(frac, col) : null, h('div', {class: 's', style: 'margin-top:6px'}, sub || ''));
+    const stat = (k, v, sub, frac, col) => h('div', {class: 'card stat', style: col && col[0] === '#' ? tint(col) : null}, h('div', {class: 'k', style: col && col[0] === '#' ? 'color:' + col : null}, k), h('div', {class: 'v'}, v), frac != null ? bar(frac, col) : null, h('div', {class: 's', style: 'margin-top:6px'}, sub || ''));
     stats.replaceChildren(
       stat('CPU', s.cpu + '%', s.mhz.length ? s.mhz.join(' ') + ' MHz' : s.cores + ' cores · load ' + s.load.join(' '), s.cpu / 100, TILE[0]),
       stat('MEMORY', used + ' MB', 'of ' + s.mem.total + ' MB · ' + s.mem.avail + ' MB free', used / s.mem.total, TILE[1]),
-      stat('TEMPERATURE', t == null ? '–' : t + ' °C', s.temps.map(x => x.name + ' ' + x.c).join(' · '), t == null ? 0 : t / 100, TILE[4]),
-      stat('BATTERY', (b.capacity || '?') + '%' + (chg ? ' ⚡' : ''), (b.status || '') + (b.source ? ' · ' + b.source : ''), cap / 100, cap > 20 ? 'var(--ok)' : 'var(--bad)'));
+      stat('TEMPERATURE', t == null ? '–' : t + ' °C', s.temps.map(x => x.name + ' ' + x.c).join(' · '), t == null ? 0 : t / 100, lvl(t, 55, 75)),
+      stat('BATTERY', (b.capacity || '?') + '%' + (chg ? ' ⚡' : ''), (b.status || '') + (b.source ? ' · ' + b.source : ''), cap / 100, cap > 50 ? '#38c172' : cap > 20 ? '#f2a93b' : '#ef5a5a'));
     extra.replaceChildren(card('Storage', null, ...s.disks.map(d => h('div', {style: 'margin:8px 0'}, h('div', {class: 'row sp'}, h('span', {}, d.path), h('span', {class: 'dim'}, fmtB(d.total - d.free) + ' / ' + fmtB(d.total))), bar((d.total - d.free) / d.total)))));
+  });
+  // Pi-hole + internet monitor come from the status page (gta2-dash on :8088)
+  const st2 = (k, v, sub, col, frac) => h('div', {class: 'card stat', style: tint(col)}, h('div', {class: 'k', style: 'color:' + col}, k), h('div', {class: 'v'}, v), frac != null ? bar(frac, col) : null, h('div', {class: 's', style: 'margin-top:6px'}, sub || ''));
+  const fmt = (n, d = 0) => n == null ? '–' : Number(n).toLocaleString(undefined, {maximumFractionDigits: d});
+  const ago = t => { const x = Math.floor(Date.now() / 1000 - t); return x < 90 ? x + ' s ago' : x < 5400 ? Math.round(x / 60) + ' min ago' : Math.round(x / 3600) + ' h ago'; };
+  every(5000, async () => {
+    const d = await fetch(`${location.protocol}//${HOST}:8088/api`, {cache: 'no-store'}).then(r => r.json()).catch(() => null);
+    if (!d) { phole.replaceChildren(st2('STATUS PAGE', 'offline', 'gta2-dash on :8088 not reachable', '#8e9aaf')); inet.replaceChildren(); return; }
+    const p = d.pihole;
+    phole.replaceChildren(...(p ? [st2('BLOCKED', fmt(p.percent, 1) + ' %', 'of all queries today', '#ff6b9d', p.percent / 100),
+      st2('TOTAL QUERIES', fmt(p.total), fmt(p.clients) + ' active clients', '#a78bfa'),
+      st2('QUERIES BLOCKED', fmt(p.blocked), fmt(p.domains) + ' domains on blocklists', '#fb923c')] : [st2('PI-HOLE', 'offline', 'not reachable on :8083', '#ef5a5a')]));
+    const n = d.net; if (!n) return inet.replaceChildren();
+    const L = n.lat || {}, sp = (n.speed || []).filter(x => x.down != null), last = sp[sp.length - 1];
+    const avg = sp.length ? sp.reduce((a, x) => a + x.down, 0) / sp.length : null;
+    const runBtn = h('button', {class: 'btn', style: 'margin-left:8px;padding:3px 8px', onclick: e => { fetch(`${location.protocol}//${HOST}:8088/speedtest`, {method: 'POST'}); e.target.textContent = 'started'; }}, 'Run now');
+    inet.replaceChildren(
+      st2('INTERNET', n.online ? '● Online' : '● Offline', (n.outages || []).length + ' recent outages', n.online ? '#38c172' : '#ef5a5a'),
+      st2('LATENCY', fmt(L['1.1.1.1']) + ' ms', `router ${fmt(L.router)} ms · 8.8.8.8 ${fmt(L['8.8.8.8'])} ms`, lvl(L['1.1.1.1'], 30, 80)),
+      st2('SPEED TEST', last ? `↓ ${fmt(last.down)} / ↑ ${fmt(last.up)}` : '–', last ? `Mbit/s · ping ${fmt(last.ping)} ms · ${ago(last.t)}` : 'every 15 min on Ethernet', '#5b8cff'),
+      st2('AVERAGE SPEED', avg == null ? '–' : '↓ ' + fmt(avg) + ' Mbit/s', sp.length + ' tests (last 24 h)', '#34d399'),
+      st2('LIVE TRAFFIC', `↓ ${fmt(n.rate && n.rate.rx, 1)} Mbit/s`, `↑ ${fmt(n.rate && n.rate.tx, 1)} Mbit/s`, '#22d3ee'));
+    inet.children[2].querySelector('.s').append(runBtn);
   });
   every(10000, async () => {
     const c = await api('/api/containers').catch(() => null); if (!c) return;

@@ -18,6 +18,8 @@ See [`MAINLINE.md`](MAINLINE.md) for the kernel side (DRM display, GPU, USB-C ho
   `gta2-docker-sd` moves Docker's data onto the card (`docker.service` waits for it, `gta2-sdwait.conf`).
 * **Tailscale** (native package): `sudo tailscale up --advertise-exit-node --advertise-routes=<lan>/24`;
   IP forwarding in `91-gta2-tailscale.conf`.
+* **Router stats** (Zyxel EX3501-T1, `gta2-router`): whole-home WAN traffic, data used, line rate, devices online on both dashboards; see [`ROUTER.md`](ROUTER.md).
+* **Display check** (`gta2-dsicheck`): reboots once if the panel link (DSI) came up dead at boot.
 * **Battery limit for 24/7 use:** Settings or `/etc/gta2/charge_limit` (e.g. 80: stop at 80 %, resume at 75 %; 100 = off).
 
 ## 1.3 changes

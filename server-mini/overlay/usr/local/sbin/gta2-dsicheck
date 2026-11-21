@@ -1,0 +1,11 @@
+#!/bin/sh
+# gta2-dsicheck: the DSI link to the panel sometimes comes up dead at boot (every DSI write times out:
+# black or distorted screen until a reboot). Test it once after boot; if dead, reboot once (max one
+# retry per 15 min, so it can never loop).
+sleep 40
+B=$(ls -d /sys/class/backlight/*dsi* 2>/dev/null | head -1); [ -n "$B" ] || exit 0
+v=$(cat $B/brightness)
+if echo "$v" > $B/brightness 2>/dev/null; then echo "DSI ok"; exit 0; fi
+F=/userdata/gta2srv/.dsifix; now=$(date +%s); last=$(cat $F 2>/dev/null || echo 0)
+if [ $((now - last)) -lt 900 ]; then echo "DSI dead, already retried recently; not rebooting"; exit 0; fi
+echo $now > $F; sync; echo "DSI dead (panel writes time out): rebooting once"; systemctl reboot
