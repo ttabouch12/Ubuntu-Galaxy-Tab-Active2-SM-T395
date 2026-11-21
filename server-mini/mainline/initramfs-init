@@ -11,9 +11,13 @@ k() { echo "gta2srv: $*" > /dev/kmsg; }
 k initramfs
 for b in /sys/bus/i2c/devices/i2c-*; do readlink -f $b | grep -q 13870000 && BUS=${b##*-}; done
 [ -n "$BUS" ] && { i2cset -y $BUS 0x25 0x13 0x24 && k "muic usb (i2c-$BUS)"; }
-for i in $(seq 1 100); do [ -b /dev/mmcblk0p24 ] && break; sleep 0.1; done
+for i in $(seq 1 200); do [ -b /dev/mmcblk0p24 ] && break; sleep 0.1; done
 fail() { k "$*"; sleep 5; reboot -f; }
-mount -t ext4 /dev/mmcblk0p24 /data || fail "no userdata"
+# eMMC unreadable (e.g. a too-fast eMMC mode in a test dtb): we cannot fix extlinux.conf from here, and
+# U-Boot would boot the same config again forever -> reboot straight into TWRP (S-Boot reboot reason).
+twrp() { k "$* -> TWRP"; sleep 5; devmem 0x1048080c 32 0x12345674; reboot -f; }
+[ -b /dev/mmcblk0p24 ] || twrp "no eMMC"
+mount -t ext4 /dev/mmcblk0p24 /data || twrp "no userdata"
 # crash recorder: save the previous boot's kernel log (ramoops) if there is one
 mkdir -p /pstore; mount -t pstore pstore /pstore 2>/dev/null && [ -n "$(ls /pstore 2>/dev/null)" ] && {
   P=/data/gta2srv/ml/pstore/$(date +%s 2>/dev/null || echo x); mkdir -p $P; cp /pstore/* $P/ 2>/dev/null; rm -f /pstore/*; sync; k "saved previous crash log to $P"; }

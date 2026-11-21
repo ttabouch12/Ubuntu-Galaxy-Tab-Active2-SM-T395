@@ -1,12 +1,25 @@
 #!/bin/sh
-# mainline 6.x: schedutil with a 2 ms rate limit, clusters capped at 1794 MHz (1.9-2.0 GHz hangs),
-# MGLRU with all features the CPU supports. No-op on 3.18.
+# gta2-perf (mainline 6.x). No-op on 3.18.
+# CPU: ondemand, because schedutil never selects the 1690/1794 MHz boost OPPs (measured: stays at 1586).
+#      Clusters capped at 1794 MHz (1.9-2.0 GHz hangs); 1794 tested: all-core load 30 s at 67 C, ~11 % faster.
+# Memory: MGLRU. Storage: loop rootfs with direct I/O (no double page cache), bigger read-ahead,
+#      /userdata noatime + 60 s commit.
 [ "$(uname -r | cut -d. -f1)" -ge 6 ] || exit 0
-for p in /sys/devices/system/cpu/cpufreq/policy*; do
+C=/sys/devices/system/cpu/cpufreq
+echo 1 > $C/boost 2>/dev/null
+for p in $C/policy*; do
   [ -d "$p" ] || continue
-  echo schedutil > $p/scaling_governor 2>/dev/null
-  echo 2000 > $p/schedutil/rate_limit_us 2>/dev/null
+  echo ondemand > $p/scaling_governor 2>/dev/null || echo schedutil > $p/scaling_governor
   max=$(cat $p/cpuinfo_max_freq); [ "$max" -gt 1794000 ] && max=1794000; echo $max > $p/scaling_max_freq
+  for g in $p/ondemand $C/ondemand; do
+    [ -d $g ] || continue
+    echo 70 > $g/up_threshold; echo 4 > $g/sampling_down_factor; echo 1 > $g/io_is_busy 2>/dev/null
+  done
 done
 echo y > /sys/kernel/mm/lru_gen/enabled 2>/dev/null
+for q in /sys/block/mmcblk0/queue /sys/block/loop0/queue; do echo 512 > $q/read_ahead_kb 2>/dev/null; done
+for q in /sys/block/sd?/queue; do [ -d $q ] && echo 1024 > $q/read_ahead_kb; done
+L=$(losetup -j /userdata/gta2srv/ml/rootfs.img 2>/dev/null | cut -d: -f1 | head -1)
+[ -n "$L" ] && losetup --direct-io=on "$L" 2>/dev/null
+mount -o remount,noatime,commit=60 /userdata 2>/dev/null
 exit 0

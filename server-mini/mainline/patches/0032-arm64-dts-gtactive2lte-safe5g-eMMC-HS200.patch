@@ -1,0 +1,36 @@
+From 183c082a64fea32d7d6c387faf24182b419570b6 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 23:42:45 +0300
+Subject: [PATCH] arm64: dts: gtactive2lte-safe5g: eMMC HS200
+
+CIU clock 800 MHz (assigned-clock-rates on DOUT_MIF_CMU_FSYS_MMC0) so the
+ciu-div 3 gives the 200 MHz HS200 card clock, plus mmc-hs200-1_8v. Tuning
+passes; sequential read 157 MB/s (DDR52: 81, legacy: 22.5). Writes stay at
+~27-32 MB/s (card-limited). Verified with repeated 200 MB write/read-back
+checksums, no mmc errors.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ .../arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
+index 21de7ff49..b4a8e347a 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
+@@ -552,6 +552,11 @@ &mmc0 {
+ 	samsung,dw-mshc-ddr-timing = <2 4>;
+ 	/* 52 MHz high speed; the card then runs DDR52 (8-bit, 1.8 V): ~81 MB/s read vs 22 MB/s legacy */
+ 	cap-mmc-highspeed;
++	/* HS200: CIU 800 MHz (ciu-div 3 -> 200 MHz card clock), as in the vendor kernel. 157 MB/s read;
++	   write is limited by the card (~27-32 MB/s). Verified with repeated write/read-back checksums. */
++	assigned-clocks = <&cmu_mif CLK_DOUT_MIF_CMU_FSYS_MMC0>;
++	assigned-clock-rates = <800000000>;
++	mmc-hs200-1_8v;
+ 	non-removable;
+ 
+ 	status = "okay";
+-- 
+2.43.0
+
