@@ -1,0 +1,372 @@
+From 4a465953a4b9e12634725de002fe38087266fd85 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 10:53:35 +0300
+Subject: [PATCH 27/31] usb: typec: add minimal Samsung S2MM005 CCIC role
+ driver
+
+The S2MM005 runs its own CC/PD firmware. Follow its function-state word
+(reg 0x20: PD state, attach, is-source, is-DFP) on every interrupt
+(ack: read the 48-byte status block at 0x30, write 1 to 0x10) and set
+the USB role switch (host when DFP, device when UFP, default when
+detached), enabling the vbus supply only while the port is the source.
+No PD messages, alternate modes or firmware update.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ drivers/usb/typec/Kconfig   |  12 ++
+ drivers/usb/typec/Makefile  |   1 +
+ drivers/usb/typec/s2mm005.c | 306 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 319 insertions(+)
+ create mode 100644 drivers/usb/typec/s2mm005.c
+
+diff --git a/drivers/usb/typec/Kconfig b/drivers/usb/typec/Kconfig
+index 2f80c2792..5adf567ed 100644
+--- a/drivers/usb/typec/Kconfig
++++ b/drivers/usb/typec/Kconfig
+@@ -88,6 +88,18 @@ config TYPEC_HD3SS3220
+ 	  If you choose to build this driver as a dynamically linked module, the
+ 	  module will be called hd3ss3220.ko.
+ 
++config TYPEC_S2MM005
++	tristate "Samsung S2MM005 Type-C controller (role only)"
++	depends on I2C
++	depends on REGULATOR
++	depends on USB_ROLE_SWITCH || !USB_ROLE_SWITCH
++	help
++	  Say Y or M here to follow the attach state and data/power role
++	  reported by the Samsung S2MM005 CCIC firmware (Galaxy Tab Active2)
++	  and switch the USB controller between host and device, turning
++	  the VBUS supply on while the port is the power source.
++	  USB Power Delivery messages and alternate modes are not handled.
++
+ config TYPEC_STUSB160X
+ 	tristate "STMicroelectronics STUSB160x Type-C controller driver"
+ 	depends on USB_ROLE_SWITCH || !USB_ROLE_SWITCH
+diff --git a/drivers/usb/typec/Makefile b/drivers/usb/typec/Makefile
+index 7a368fea6..2aa8a0dbe 100644
+--- a/drivers/usb/typec/Makefile
++++ b/drivers/usb/typec/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_TYPEC_UCSI)	+= ucsi/
+ obj-$(CONFIG_TYPEC_TPS6598X)	+= tipd/
+ obj-$(CONFIG_TYPEC_ANX7411)	+= anx7411.o
+ obj-$(CONFIG_TYPEC_HD3SS3220)	+= hd3ss3220.o
++obj-$(CONFIG_TYPEC_S2MM005)	+= s2mm005.o
+ obj-$(CONFIG_TYPEC_STUSB160X) 	+= stusb160x.o
+ obj-$(CONFIG_TYPEC_RT1719)	+= rt1719.o
+ obj-$(CONFIG_TYPEC_WUSB3801)	+= wusb3801.o
+diff --git a/drivers/usb/typec/s2mm005.c b/drivers/usb/typec/s2mm005.c
+new file mode 100644
+index 000000000..7bcd0dcda
+--- /dev/null
++++ b/drivers/usb/typec/s2mm005.c
+@@ -0,0 +1,306 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Samsung S2MM005 USB Type-C / PD controller (CCIC) - minimal role driver
++ *
++ * The S2MM005 runs its own firmware for CC detection and Power Delivery.
++ * This driver only follows its result: on every interrupt it reads the
++ * function-state word and tells the USB controller which data role to take
++ * (host when the tablet is the downstream-facing port, device when it is
++ * the upstream-facing port, default when nothing is attached), and turns
++ * the external VBUS supply on while the tablet is the power source.
++ * No PD messages, alternate modes or firmware updates are handled.
++ *
++ * Register access follows the vendor driver (Samsung, drivers/ccic/s2mm005*.c):
++ * 16-bit big-endian register address, then data.
++ *   0x20  function state (32-bit LE): [7:0] PD state, bit 24 attach done,
++ *         bit 25 is source, bit 26 is DFP
++ *   0x30  interrupt status block (48 bytes), cleared by writing 1 to 0x10
++ */
++
++#include <linux/bitfield.h>
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/property.h>
++#include <linux/regulator/consumer.h>
++#include <linux/usb/role.h>
++#include <linux/usb/typec.h>
++#include <linux/unaligned.h>
++
++#define S2MM005_REG_INT_CLEAR		0x10
++#define S2MM005_REG_FUNC_STATE		0x20
++#define S2MM005_REG_INT_STATUS		0x30
++#define S2MM005_INT_STATUS_LEN		48
++
++#define S2MM005_FUNC_PD_STATE		GENMASK(7, 0)
++#define S2MM005_FUNC_ATTACH_DONE	BIT(24)
++#define S2MM005_FUNC_IS_SOURCE		BIT(25)
++#define S2MM005_FUNC_IS_DFP		BIT(26)
++#define S2MM005_FUNC_RESET		BIT(31)
++
++#define S2MM005_PD_STATE_DETACHED	0
++
++struct s2mm005 {
++	struct i2c_client *client;
++	struct mutex lock;
++	struct usb_role_switch *role_sw;
++	struct regulator *vbus;
++	bool vbus_on;
++	struct typec_port *port;
++	struct fwnode_handle *connector;
++	enum usb_role role;
++	u32 func_state;
++};
++
++static int s2mm005_read(struct s2mm005 *s, u16 reg, u8 *buf, u16 len)
++{
++	u8 addr[2] = { reg >> 8, reg & 0xff };
++	struct i2c_msg msg[2] = {
++		{ .addr = s->client->addr, .flags = 0, .len = 2, .buf = addr },
++		{ .addr = s->client->addr, .flags = I2C_M_RD, .len = len, .buf = buf },
++	};
++	int ret;
++
++	ret = i2c_transfer(s->client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret < 0)
++		return ret;
++	return ret == ARRAY_SIZE(msg) ? 0 : -EIO;
++}
++
++static int s2mm005_write8(struct s2mm005 *s, u16 reg, u8 val)
++{
++	u8 buf[3] = { reg >> 8, reg & 0xff, val };
++	struct i2c_msg msg = {
++		.addr = s->client->addr, .flags = 0, .len = 3, .buf = buf,
++	};
++	int ret;
++
++	ret = i2c_transfer(s->client->adapter, &msg, 1);
++	if (ret < 0)
++		return ret;
++	return ret == 1 ? 0 : -EIO;
++}
++
++static void s2mm005_set_vbus(struct s2mm005 *s, bool on)
++{
++	int ret;
++
++	if (!s->vbus || s->vbus_on == on)
++		return;
++
++	ret = on ? regulator_enable(s->vbus) : regulator_disable(s->vbus);
++	if (ret) {
++		dev_err(&s->client->dev, "cannot turn VBUS %s: %d\n",
++			on ? "on" : "off", ret);
++		return;
++	}
++	s->vbus_on = on;
++	dev_info(&s->client->dev, "VBUS %s\n", on ? "on" : "off");
++}
++
++static void s2mm005_set_role(struct s2mm005 *s, enum usb_role role)
++{
++	int ret;
++
++	if (s->role == role)
++		return;
++
++	if (s->role_sw) {
++		ret = usb_role_switch_set_role(s->role_sw, role);
++		if (ret) {
++			dev_err(&s->client->dev, "cannot set role %s: %d\n",
++				usb_role_string(role), ret);
++			return;
++		}
++	}
++	s->role = role;
++	dev_info(&s->client->dev, "data role: %s\n", usb_role_string(role));
++}
++
++static void s2mm005_update(struct s2mm005 *s)
++{
++	u8 raw[4];
++	u32 st;
++	u8 pd_state;
++	bool attached, dfp, src;
++	int ret;
++
++	ret = s2mm005_read(s, S2MM005_REG_FUNC_STATE, raw, sizeof(raw));
++	if (ret) {
++		dev_err(&s->client->dev, "cannot read function state: %d\n", ret);
++		return;
++	}
++
++	st = get_unaligned_le32(raw);
++	pd_state = FIELD_GET(S2MM005_FUNC_PD_STATE, st);
++	attached = pd_state != S2MM005_PD_STATE_DETACHED;
++	dfp = st & S2MM005_FUNC_IS_DFP;
++	src = st & S2MM005_FUNC_IS_SOURCE;
++
++	if (st != s->func_state)
++		dev_info(&s->client->dev,
++			 "func_state 0x%08x: pd_state %u attached %d dfp %d src %d\n",
++			 st, pd_state, attached, dfp, src);
++	s->func_state = st;
++
++	if (!attached) {
++		s2mm005_set_vbus(s, false);
++		s2mm005_set_role(s, USB_ROLE_NONE);
++		if (s->port) {
++			typec_set_data_role(s->port, TYPEC_DEVICE);
++			typec_set_pwr_role(s->port, TYPEC_SINK);
++		}
++		return;
++	}
++
++	if (dfp) {
++		/* VBUS first, so the hub enumerates once the host starts */
++		s2mm005_set_vbus(s, src);
++		s2mm005_set_role(s, USB_ROLE_HOST);
++	} else {
++		s2mm005_set_vbus(s, false);
++		s2mm005_set_role(s, USB_ROLE_DEVICE);
++	}
++
++	if (s->port) {
++		typec_set_data_role(s->port, dfp ? TYPEC_HOST : TYPEC_DEVICE);
++		typec_set_pwr_role(s->port, src ? TYPEC_SOURCE : TYPEC_SINK);
++	}
++}
++
++static irqreturn_t s2mm005_irq(int irq, void *data)
++{
++	struct s2mm005 *s = data;
++	u8 status[S2MM005_INT_STATUS_LEN];
++
++	guard(mutex)(&s->lock);
++
++	/* read and acknowledge the interrupt status block, as the vendor driver does */
++	if (!s2mm005_read(s, S2MM005_REG_INT_STATUS, status, sizeof(status)))
++		s2mm005_write8(s, S2MM005_REG_INT_CLEAR, 0x1);
++
++	s2mm005_update(s);
++
++	return IRQ_HANDLED;
++}
++
++static int s2mm005_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct typec_capability cap = {};
++	struct s2mm005 *s;
++	u8 dummy;
++	int i, ret;
++
++	s = devm_kzalloc(dev, sizeof(*s), GFP_KERNEL);
++	if (!s)
++		return -ENOMEM;
++
++	s->client = client;
++	s->role = USB_ROLE_NONE;
++	s->func_state = U32_MAX;
++	i2c_set_clientdata(client, s);
++
++	ret = devm_mutex_init(dev, &s->lock);
++	if (ret)
++		return ret;
++
++	/* the vendor driver wakes the chip with a few dummy reads */
++	for (i = 0; i < 5; i++)
++		s2mm005_read(s, 0x8, &dummy, 1);
++
++	ret = s2mm005_read(s, S2MM005_REG_FUNC_STATE, (u8 *)&s->func_state, 4);
++	if (ret)
++		return dev_err_probe(dev, ret, "no S2MM005 on the bus\n");
++	s->func_state = U32_MAX;
++
++	s->vbus = devm_regulator_get_optional(dev, "vbus");
++	if (IS_ERR(s->vbus)) {
++		if (PTR_ERR(s->vbus) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(s->vbus),
++					     "cannot get vbus supply\n");
++		s->vbus = NULL;
++	}
++
++	s->connector = device_get_named_child_node(dev, "connector");
++	if (s->connector) {
++		s->role_sw = fwnode_usb_role_switch_get(s->connector);
++		if (IS_ERR(s->role_sw)) {
++			ret = PTR_ERR(s->role_sw);
++			fwnode_handle_put(s->connector);
++			return dev_err_probe(dev, ret, "cannot get USB role switch\n");
++		}
++
++		cap.type = TYPEC_PORT_DRP;
++		cap.data = TYPEC_PORT_DRD;
++		cap.revision = USB_TYPEC_REV_1_2;
++		cap.prefer_role = TYPEC_NO_PREFERRED_ROLE;
++		cap.fwnode = s->connector;
++		s->port = typec_register_port(dev, &cap);
++		if (IS_ERR(s->port)) {
++			dev_warn(dev, "no typec port: %ld\n", PTR_ERR(s->port));
++			s->port = NULL;
++		}
++	} else {
++		dev_warn(dev, "no connector node: roles are not reported\n");
++	}
++
++	scoped_guard(mutex, &s->lock)
++		s2mm005_update(s);
++
++	ret = devm_request_threaded_irq(dev, client->irq, NULL, s2mm005_irq,
++					IRQF_ONESHOT, "s2mm005", s);
++	if (ret)
++		goto err;
++
++	dev_info(dev, "S2MM005 Type-C controller ready\n");
++	return 0;
++
++err:
++	if (s->port)
++		typec_unregister_port(s->port);
++	usb_role_switch_put(s->role_sw);
++	fwnode_handle_put(s->connector);
++	return dev_err_probe(dev, ret, "cannot request irq\n");
++}
++
++static void s2mm005_remove(struct i2c_client *client)
++{
++	struct s2mm005 *s = i2c_get_clientdata(client);
++
++	disable_irq(client->irq);
++	s2mm005_set_vbus(s, false);
++	if (s->port)
++		typec_unregister_port(s->port);
++	usb_role_switch_put(s->role_sw);
++	fwnode_handle_put(s->connector);
++}
++
++static const struct of_device_id s2mm005_of_match[] = {
++	{ .compatible = "samsung,s2mm005" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, s2mm005_of_match);
++
++static const struct i2c_device_id s2mm005_id[] = {
++	{ "s2mm005" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, s2mm005_id);
++
++static struct i2c_driver s2mm005_driver = {
++	.driver = {
++		.name = "s2mm005",
++		.of_match_table = s2mm005_of_match,
++	},
++	.probe = s2mm005_probe,
++	.remove = s2mm005_remove,
++	.id_table = s2mm005_id,
++};
++module_i2c_driver(s2mm005_driver);
++
++MODULE_DESCRIPTION("Samsung S2MM005 USB Type-C controller (role only)");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

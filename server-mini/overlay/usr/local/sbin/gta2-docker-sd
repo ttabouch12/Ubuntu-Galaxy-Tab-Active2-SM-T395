@@ -1,0 +1,31 @@
+#!/bin/sh
+# gta2-docker-sd: keep Docker's data (images, containers, volumes) on the microSD card or on the internal storage.
+#   gta2-docker-sd status        where Docker's data is now
+#   gta2-docker-sd to-sd         copy everything to /media/sdcard/docker and switch Docker to it
+#   gta2-docker-sd to-internal   copy it back to /userdata/gta2srv/docker and switch back
+#   gta2-docker-sd wait          (docker.service ExecStartPre) wait up to 30 s for the card if Docker lives on it
+# The card must be ext4 (overlay2 does not work on FAT/exFAT): gta2-sdformat formats it.
+set -e
+J=/etc/docker/daemon.json; SD=/media/sdcard; IN=/userdata/gta2srv/docker
+root() { python3 -c "import json;print(json.load(open('$J')).get('data-root','/var/lib/docker'))"; }
+setroot() { python3 - "$1" <<P
+import json,sys; p='$J'; j=json.load(open(p)); j['data-root']=sys.argv[1]; open(p,'w').write(json.dumps(j,indent=2)+'\n')
+P
+}
+move() {  # $1 = from, $2 = to
+  [ "$(root)" = "$1" ] || { echo "Docker is not using $1 (it uses $(root))"; exit 1; }
+  echo "stopping Docker"; systemctl stop docker docker.socket
+  mkdir -p "$2"; echo "copying $1 -> $2"; rsync -aHAX --delete "$1/" "$2/"
+  setroot "$2"; systemctl start docker; echo "Docker now uses $2 (the old copy in $1 is kept; delete it when happy)"
+}
+case "$1" in
+  status) echo "data-root: $(root)"; df -h "$(root)" | tail -1 ;;
+  to-sd)
+    mountpoint -q $SD || { echo "no SD card mounted at $SD"; exit 1; }
+    T=$(findmnt -no FSTYPE $SD); case "$T" in ext4|btrfs|xfs|f2fs) ;; *) echo "SD card is $T: Docker needs ext4 (run: sudo gta2-sdformat)"; exit 1 ;; esac
+    move $IN $SD/docker ;;
+  to-internal) move $SD/docker $IN ;;
+  wait)
+    case "$(root)" in $SD/*) for i in $(seq 1 30); do mountpoint -q $SD && exit 0; sleep 1; done; echo "Docker data is on the SD card, but no card is mounted"; exit 1 ;; esac ;;
+  *) echo "usage: $0 status|to-sd|to-internal"; exit 1 ;;
+esac

@@ -16,9 +16,17 @@ upstream tree plus the patches in [`mainline/patches/`](mainline/patches/). It b
 | Temperature | Minimal Exynos 7870 TMU driver (new), thermal zone with a 90 °C passive trip |
 | **CPU frequency** | **Works.** New CMU_CPUCL0/1 clock driver + OPP tables, `cpufreq-dt`. 343 MHz–1586 MHz, plus boost 1690/1794 MHz. Before this, the mainline kernel ran at the bootloader's 902 MHz |
 | SD card | `dw_mmc` channel 2, card-detect GPIO |
+| eMMC | **DDR52** (patch 0031, `cap-mmc-highspeed`): 81 MB/s read, 32 MB/s write (was 22.5 / 16.7 MB/s in legacy 25 MHz mode). HS200 would need the CIU clock raised to 800 MHz; not done |
+| **USB-C host / docks** | **Works** (patches 0027–0030). New minimal S2MM005 CCIC driver (role switch + PD start commands), SM5705 OTG VBUS regulator, dwc3 `otg`. Tested with a HyperDrive Next 7-port dock (HD4003GL): RTL8153 gigabit Ethernet, USB ports, USB storage; with a PD charger in the dock the tablet charges and stays host (data-role swap by the CCIC firmware). USB 2.0 only (480 Mbit/s): Ethernet ~200+ Mbit/s. No HDMI (no DisplayPort alt mode). The RTL8153B wants `rtl_nic/rtl8153b-2.fw` from linux-firmware (works without it) |
 | GPU | **Mali-T830 MP1 on panfrost** (patch 0024: G3D PLL table, DVFS 343–1001 MHz at 0.900–0.925 V on BUCK2). OpenGL ES 3.1 / GL 3.1 through Mesa, `/dev/dri/renderD128` (also usable from Docker with `--device /dev/dri/renderD128`). No Vulkan, OpenCL or video decode |
 | Audio, camera, modem | Not yet (audio plan: [`../ztos/audio/AUDIO_PLAN.md`](../ztos/audio/AUDIO_PLAN.md)) |
-| Docker | cgroup v2, overlay2 and user namespaces available (unlike 3.18). The kernel has no iptables `raw` table, so `docker.service` runs with `DOCKER_INSECURE_NO_IPTABLES_RAW=1` (otherwise Docker 28 cannot start containers) |
+| Docker | cgroup v2, overlay2 and user namespaces available (unlike 3.18). Kernels before r7 have no iptables `raw` table, so `docker.service` runs with `DOCKER_INSECURE_NO_IPTABLES_RAW=1` (otherwise Docker 28 cannot start containers); r7 has `IP_NF_RAW` |
+
+### What was wrong with USB host (for anyone porting another S2MM005/SM5705 device)
+
+1. **The CCIC waits for the AP.** As a source it sits in `PE_SRC_Wait_New_Capabilities` (pd_state 14) until the AP sends the vendor "alternate mode start" (`0x10 <- 03 31`) and "power nego start" (`0x10 <- 03 42`) commands. Turning VBUS on before the CCIC reaches a source state (3..7) makes it drop the attach and discharge VBUS against the boost: the tablet browned out once in testing. A PD dock also re-negotiated every 30–60 s without these commands.
+2. **SM5705 MUIC `CONTROL.SW_OPEN` (bit 4) is active low.** It must be 1 (vendor init value `0x1f`) or the D+/D- switches stay open. Device mode happened to work anyway; a host never saw the attached device.
+3. **The HS PHY needs a host tune.** With the device-mode `PHYPARAM0` the port detects a device but every port reset fails ("Cannot enable"). Host mode needs `COMPDISTUNE=7`, `TXVREFTUNE=5` and the D+/D- pull-downs (vendor `host_usbphy_hstune_parameter`), applied through `phy_set_mode()` (patch 0030).
 
 ### CPU voltages and overclocking
 
@@ -41,14 +49,15 @@ Single-core speed for one SHA-256 of 32 MB:
 
 ## Recommended setup (2026-11-21)
 
-Kernel `Image` from this tree with all patches (0001–0026) and `mainline/gta2.config`, device tree
-`exynos7870-gtactive2lte-safe5g.dtb` (DRM display + GPU). `extlinux.conf` on the data partition:
+Kernel `Image` from this tree with all patches (0001–0031) and `mainline/gta2.config` +
+`mainline/usb-host.config` + `mainline/r7.config` (r7: BBR + fq, exFAT/NTFS3/F2FS, WireGuard, iptables raw, UAS),
+device tree `exynos7870-gtactive2lte-safe5g.dtb` (DRM display + GPU + USB-C host + eMMC DDR52). `extlinux.conf` on the data partition:
 
 ```
 default good
 timeout 1
 label good
-  menu label Ubuntu Server Mini (mainline 6.18)
+  menu label Ubuntu Server Mini (mainline 6.18, r7)
   linux /gta2srv/ml/Image
   fdt /gta2srv/ml/exynos7870-gtactive2lte-safe5g.dtb
   append console=tty0 loglevel=4 fbcon=logo-count:1 panic=10 clk_ignore_unused pd_ignore_unused fbcon=rotate:2 s3c2410_wdt.tmr_atboot=0
@@ -57,6 +66,7 @@ label good
 Notes:
 * The simple-framebuffer node is `x8r8g8b8` (patch 0023); `x8b8g8r8` swapped red and blue.
 * The display modules are loaded at boot by `/etc/modules-load.d/gta2-display.conf` (they do not autoload).
+* Do not enable `CONFIG_ATH10K_DEBUGFS`: its calibration-data read at start-up breaks `ath10k_sdio` (SDIO timeouts, no Wi-Fi).
 * `gta2.sys=<name>` on the command line picks `/data/gta2srv/<name>/rootfs.img` (default `ml`).
 
 ### Performance profile (in the overlay)
@@ -65,6 +75,7 @@ Notes:
   watermark_scale_factor 125, dirty 3/10, fq_codel, TCP Fast Open.
 * I/O: no scheduler on eMMC, zram and the loop root, readahead 128 kB (`60-gta2-io.rules`).
 * CPU: `gta2-perf` caps both clusters at 1794 MHz and sets schedutil's rate limit; MGLRU on.
+* Network (r7): BBR congestion control, `fq` qdisc (`92-gta2-net.conf`); Wi-Fi power saving off (`90-gta2-wifi-nopowersave.conf`).
 * journald: volatile, 16 MB. Time zone: `rootfs_ml.sh` sets Europe/Istanbul; change it with `sudo timedatectl set-timezone <zone>`.
 
 ### Clean install (mainline only)

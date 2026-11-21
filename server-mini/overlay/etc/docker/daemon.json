@@ -1,9 +1,13 @@
 {
   "data-root": "/userdata/gta2srv/docker",
-  "storage-driver": "vfs",
-  "features": { "containerd-snapshotter": false },
+  "storage-driver": "overlay2",
+  "features": {
+    "containerd-snapshotter": false
+  },
   "iptables": true,
   "ip6tables": false,
   "log-driver": "local",
-  "log-opts": { "max-size": "5m" }
+  "log-opts": {
+    "max-size": "5m"
+  }
 }

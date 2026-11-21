@@ -1,0 +1,13 @@
+#!/bin/sh
+# gta2-sdformat: ERASE the microSD card and format it as one ext4 partition (label GTA2SD), then mount it.
+#   sudo gta2-sdformat --yes-erase-the-card
+set -e
+[ "$1" = "--yes-erase-the-card" ] || { echo "This erases the whole SD card. Run: sudo $0 --yes-erase-the-card"; exit 1; }
+D=$(for b in /sys/block/mmcblk[1-9]; do [ "$(cat $b/device/type 2>/dev/null)" = SD ] && basename $b; done | head -1)
+[ -n "$D" ] || { echo "no SD card found"; exit 1; }
+umount -l /media/sdcard 2>/dev/null || true
+echo "formatting /dev/$D"
+printf 'label: gpt\n,,L\n' | sfdisk -q /dev/$D
+sleep 1; P=/dev/${D}p1; mkfs.ext4 -q -F -L GTA2SD -E lazy_itable_init=1 $P
+mkdir -p /media/sdcard; mount -o rw,noatime $P /media/sdcard; chown 1000:1000 /media/sdcard
+ln -sfn /media/sdcard "/userdata/gta2srv/share/SD card"; echo "done: $P on /media/sdcard"

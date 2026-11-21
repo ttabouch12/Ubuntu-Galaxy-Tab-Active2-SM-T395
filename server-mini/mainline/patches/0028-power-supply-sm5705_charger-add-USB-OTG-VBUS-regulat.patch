@@ -1,0 +1,191 @@
+From 0c9859e9229672e01c634bc2596af3cff1f303f3 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 10:53:36 +0300
+Subject: [PATCH 28/31] power: supply: sm5705_charger: add USB OTG VBUS
+ regulator
+
+Run the charger as a boost converter for USB host mode, as the vendor
+operating-mode table does for an OTG cable: CNTL mode 7, boost output
+5.1 V (FLEDCNTL6 0xb), OTG current limit 0.9 A (CHGCNTL6). Disabling goes
+through SUSPEND back to charging and restores 4.5 V / 0.5 A. Registered
+when the charger node has a usb-otg-vbus child.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ drivers/power/supply/Kconfig          |   1 +
+ drivers/power/supply/sm5705_charger.c | 119 ++++++++++++++++++++++++++
+ 2 files changed, 120 insertions(+)
+
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index 91435233f..ff060e2fc 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -845,6 +845,7 @@ config BATTERY_SM5705
+ config CHARGER_SM5705
+ 	tristate "Silicon Mitus SM5705 battery charger"
+ 	depends on MFD_SM5705
++	depends on REGULATOR
+ 	select EXTCON
+ 	help
+ 	  Say Y here to enable support for the battery charger of the
+diff --git a/drivers/power/supply/sm5705_charger.c b/drivers/power/supply/sm5705_charger.c
+index d22afe772..3aa477fbe 100644
+--- a/drivers/power/supply/sm5705_charger.c
++++ b/drivers/power/supply/sm5705_charger.c
+@@ -27,12 +27,25 @@
+ #include <linux/power_supply.h>
+ #include <linux/property.h>
+ #include <linux/regmap.h>
++#include <linux/regulator/driver.h>
+ #include <linux/units.h>
+ 
+ /* CNTL: operating mode in [2:0] */
+ #define SM5705_CNTL_OP_MODE_MASK	GENMASK(2, 0)
+ #define SM5705_OP_MODE_SUSPEND		0x0
+ #define SM5705_OP_MODE_CHG_ON		0x5
++#define SM5705_OP_MODE_USB_OTG		0x7
++
++/* CHGCNTL6: OTG current limit [3:2] (0.5/0.7/0.9/1.5 A) */
++#define SM5705_CHGCNTL6_OTGCUR_MASK	GENMASK(3, 2)
++#define SM5705_OTGCUR_500MA		0x0
++#define SM5705_OTGCUR_900MA		0x2
++
++/* FLEDCNTL6: boost output voltage [3:0] (vendor: 0x5 = 4.5 V idle, 0xb = 5.1 V for OTG) */
++#define SM5705_REG_FLEDCNTL6		0x20
++#define SM5705_FLEDCNTL6_BSTOUT_MASK	GENMASK(3, 0)
++#define SM5705_BSTOUT_4500MV		0x5
++#define SM5705_BSTOUT_5100MV		0xb
+ 
+ /* VBUSCNTL: input current limit, 100 mA + 25 mA * n, 7 bits */
+ #define SM5705_VBUSCNTL_MASK		GENMASK(6, 0)
+@@ -95,6 +108,7 @@ struct sm5705_charger {
+ 	u32 float_uv;
+ 	u32 topoff_ua;
+ 	bool inhibit;	/* user asked to pause charging (charge_behaviour) */
++	bool otg;	/* boost is supplying VBUS (USB host) */
+ };
+ 
+ static const char * const sm5705_limit_props[SM5705_NUM_CABLES] = {
+@@ -495,6 +509,93 @@ static int sm5705_chg_parse_dt(struct sm5705_charger *chg)
+ 	return 0;
+ }
+ 
++/*
++ * USB OTG VBUS: the charger runs as a boost converter (operating mode 7,
++ * 5.1 V, 0.9 A limit), as the vendor charger_oper table does for an OTG cable.
++ * Going back from OTG to charging passes through SUSPEND (vendor BAT_REG work-around).
++ */
++static int sm5705_otg_enable(struct regulator_dev *rdev)
++{
++	struct sm5705_charger *chg = rdev_get_drvdata(rdev);
++	struct regmap *regmap = chg->regmap;
++	int ret;
++
++	guard(mutex)(&chg->lock);
++
++	ret = regmap_update_bits(regmap, SM5705_REG_CHGCNTL6, SM5705_CHGCNTL6_OTGCUR_MASK,
++				 FIELD_PREP(SM5705_CHGCNTL6_OTGCUR_MASK, SM5705_OTGCUR_900MA));
++	if (ret)
++		return ret;
++	ret = regmap_update_bits(regmap, SM5705_REG_FLEDCNTL6, SM5705_FLEDCNTL6_BSTOUT_MASK,
++				 FIELD_PREP(SM5705_FLEDCNTL6_BSTOUT_MASK, SM5705_BSTOUT_5100MV));
++	if (ret)
++		return ret;
++	ret = regmap_update_bits(regmap, SM5705_REG_CNTL, SM5705_CNTL_OP_MODE_MASK,
++				 FIELD_PREP(SM5705_CNTL_OP_MODE_MASK, SM5705_OP_MODE_USB_OTG));
++	if (ret)
++		return ret;
++
++	chg->otg = true;
++	dev_info(chg->dev, "USB OTG VBUS on\n");
++	return 0;
++}
++
++static int sm5705_otg_disable(struct regulator_dev *rdev)
++{
++	struct sm5705_charger *chg = rdev_get_drvdata(rdev);
++	struct regmap *regmap = chg->regmap;
++	int ret;
++
++	guard(mutex)(&chg->lock);
++
++	ret = regmap_update_bits(regmap, SM5705_REG_CNTL, SM5705_CNTL_OP_MODE_MASK,
++				 FIELD_PREP(SM5705_CNTL_OP_MODE_MASK, SM5705_OP_MODE_SUSPEND));
++	if (ret)
++		return ret;
++	usleep_range(1000, 2000);
++	ret = regmap_update_bits(regmap, SM5705_REG_CNTL, SM5705_CNTL_OP_MODE_MASK,
++				 FIELD_PREP(SM5705_CNTL_OP_MODE_MASK, SM5705_OP_MODE_CHG_ON));
++	if (ret)
++		return ret;
++	regmap_update_bits(regmap, SM5705_REG_FLEDCNTL6, SM5705_FLEDCNTL6_BSTOUT_MASK,
++			   FIELD_PREP(SM5705_FLEDCNTL6_BSTOUT_MASK, SM5705_BSTOUT_4500MV));
++	regmap_update_bits(regmap, SM5705_REG_CHGCNTL6, SM5705_CHGCNTL6_OTGCUR_MASK,
++			   FIELD_PREP(SM5705_CHGCNTL6_OTGCUR_MASK, SM5705_OTGCUR_500MA));
++
++	chg->otg = false;
++	dev_info(chg->dev, "USB OTG VBUS off\n");
++	return 0;
++}
++
++static int sm5705_otg_is_enabled(struct regulator_dev *rdev)
++{
++	struct sm5705_charger *chg = rdev_get_drvdata(rdev);
++	unsigned int val;
++	int ret;
++
++	ret = regmap_read(chg->regmap, SM5705_REG_CNTL, &val);
++	if (ret)
++		return ret;
++
++	return FIELD_GET(SM5705_CNTL_OP_MODE_MASK, val) == SM5705_OP_MODE_USB_OTG;
++}
++
++static const struct regulator_ops sm5705_otg_ops = {
++	.enable = sm5705_otg_enable,
++	.disable = sm5705_otg_disable,
++	.is_enabled = sm5705_otg_is_enabled,
++};
++
++static const struct regulator_desc sm5705_otg_desc = {
++	.name = "sm5705-usb-otg-vbus",
++	.of_match = "usb-otg-vbus",
++	.type = REGULATOR_VOLTAGE,
++	.owner = THIS_MODULE,
++	.ops = &sm5705_otg_ops,
++	.fixed_uV = 5100000,
++	.n_voltages = 1,
++};
++
+ static int sm5705_chg_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -566,6 +667,24 @@ static int sm5705_chg_probe(struct platform_device *pdev)
+ 					     "cannot register extcon notifier\n");
+ 	}
+ 
++	/* VBUS boost for USB host mode (optional "usb-otg-vbus" child node) */
++	struct fwnode_handle *otg_node = device_get_named_child_node(dev, "usb-otg-vbus");
++
++	if (otg_node) {
++		struct regulator_config rcfg = {
++			.dev = dev,
++			.driver_data = chg,
++			.regmap = chg->regmap,
++		};
++		struct regulator_dev *rdev;
++
++		fwnode_handle_put(otg_node);
++		rdev = devm_regulator_register(dev, &sm5705_otg_desc, &rcfg);
++		if (IS_ERR(rdev))
++			return dev_err_probe(dev, PTR_ERR(rdev),
++					     "cannot register OTG VBUS regulator\n");
++	}
++
+ 	/* Pick up a cable that was attached before we probed */
+ 	sm5705_chg_update(chg);
+ 
+-- 
+2.43.0
+

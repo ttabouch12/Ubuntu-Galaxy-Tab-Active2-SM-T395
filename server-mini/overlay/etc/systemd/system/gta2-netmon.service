@@ -1,0 +1,11 @@
+[Unit]
+Description=gta2: network monitor for the dashboard (latency, traffic, outages, hourly speed test)
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/gta2-netmon
+Restart=always
+RestartSec=10
+Nice=10
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,302 @@
+From 4119fc1312b649a0d56a0a9bcb9c87d1e974429b Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 10:53:36 +0300
+Subject: [PATCH 29/31] arm64: dts: gtactive2lte: USB-C host via S2MM005 and
+ OTG VBUS
+
+S2MM005 on i2c2 (vendor i2c@13850000) at 0x33, IRQ gpa1-3, VBUS from the
+SM5705 boost, usb-c-connector graph-linked to the dwc3 role switch.
+dwc3 goes otg with role-switch-default-mode peripheral, so the gadget
+still works when nothing (or no CCIC driver) reports a role.
+Applied to the main dts and the safe3g/safe5g variants.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ .../exynos/exynos7870-gtactive2lte-safe3g.dts | 66 ++++++++++++++++++-
+ .../exynos/exynos7870-gtactive2lte-safe5g.dts | 66 ++++++++++++++++++-
+ .../dts/exynos/exynos7870-gtactive2lte.dts    | 66 ++++++++++++++++++-
+ 3 files changed, 189 insertions(+), 9 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts
+index 075b274f6..395527c2b 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts
+@@ -741,11 +741,19 @@ &usbdrd {
+ 
+ 	usb@0 {
+ 		/*
+-		 * Peripheral only for now; switch to "otg" once the SM5705
+-		 * MUIC driver provides a usb-role-switch.
++		 * Host or device, chosen by the S2MM005 Type-C controller through
++		 * the usb-role-switch (exynos7870.dtsi). Nothing attached or the
++		 * CCIC driver missing: stay a USB device (RNDIS/NCM gadget).
+ 		 */
+-		dr_mode = "peripheral";
++		dr_mode = "otg";
++		role-switch-default-mode = "peripheral";
+ 		maximum-speed = "high-speed";
++
++		port {
++			dwc3_hs_ep: endpoint {
++				remote-endpoint = <&s2mm005_hs_ep>;
++			};
++		};
+ 	};
+ };
+ 
+@@ -787,6 +795,13 @@ charger: charger {
+ 			enable-gpios = <&gpd1 3 GPIO_ACTIVE_LOW>;	/* z_batterydata:240 chg_gpio_en, polarity_en 0 */
+ 			monitored-battery = <&battery>;
+ 			extcon = <&muic>;
++
++			/* boost converter: 5.1 V VBUS for USB host (docks, sticks) */
++			usb_otg_vbus: usb-otg-vbus {
++				regulator-name = "usb_otg_vbus";
++				regulator-min-microvolt = <5100000>;
++				regulator-max-microvolt = <5100000>;
++			};
+ 		};
+ 	};
+ 
+@@ -845,6 +860,51 @@ muic_irq: muic-irq-pins {	/* common.dtsi:418-423 */
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+ 		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+ 	};
++
++	usbpd_irq: usbpd-irq-pins {	/* ccic-s2mm005_01.dtsi: usbpd_irq */
++		samsung,pins = "gpa1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++/* ---- USB Type-C: Samsung S2MM005 CCIC on vendor i2c@13850000 (mainline i2c2) ---- */
++&i2c2 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	typec@33 {
++		compatible = "samsung,s2mm005";
++		reg = <0x33>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&usbpd_irq>;
++		interrupts-extended = <&gpa1 3 IRQ_TYPE_EDGE_FALLING>;
++		vbus-supply = <&usb_otg_vbus>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			data-role = "dual";
++			power-role = "dual";
++			try-power-role = "sink";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					s2mm005_hs_ep: endpoint {
++						remote-endpoint = <&dwc3_hs_ep>;
++					};
++				};
++			};
++		};
++	};
+ };
+ 
+ &pinctrl_top {				/* vendor pinctrl@139B0000 = gpd banks */
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
+index e74d49d7a..b1af138eb 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
+@@ -741,11 +741,19 @@ &usbdrd {
+ 
+ 	usb@0 {
+ 		/*
+-		 * Peripheral only for now; switch to "otg" once the SM5705
+-		 * MUIC driver provides a usb-role-switch.
++		 * Host or device, chosen by the S2MM005 Type-C controller through
++		 * the usb-role-switch (exynos7870.dtsi). Nothing attached or the
++		 * CCIC driver missing: stay a USB device (RNDIS/NCM gadget).
+ 		 */
+-		dr_mode = "peripheral";
++		dr_mode = "otg";
++		role-switch-default-mode = "peripheral";
+ 		maximum-speed = "high-speed";
++
++		port {
++			dwc3_hs_ep: endpoint {
++				remote-endpoint = <&s2mm005_hs_ep>;
++			};
++		};
+ 	};
+ };
+ 
+@@ -787,6 +795,13 @@ charger: charger {
+ 			enable-gpios = <&gpd1 3 GPIO_ACTIVE_LOW>;	/* z_batterydata:240 chg_gpio_en, polarity_en 0 */
+ 			monitored-battery = <&battery>;
+ 			extcon = <&muic>;
++
++			/* boost converter: 5.1 V VBUS for USB host (docks, sticks) */
++			usb_otg_vbus: usb-otg-vbus {
++				regulator-name = "usb_otg_vbus";
++				regulator-min-microvolt = <5100000>;
++				regulator-max-microvolt = <5100000>;
++			};
+ 		};
+ 	};
+ 
+@@ -845,6 +860,51 @@ muic_irq: muic-irq-pins {	/* common.dtsi:418-423 */
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+ 		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+ 	};
++
++	usbpd_irq: usbpd-irq-pins {	/* ccic-s2mm005_01.dtsi: usbpd_irq */
++		samsung,pins = "gpa1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++/* ---- USB Type-C: Samsung S2MM005 CCIC on vendor i2c@13850000 (mainline i2c2) ---- */
++&i2c2 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	typec@33 {
++		compatible = "samsung,s2mm005";
++		reg = <0x33>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&usbpd_irq>;
++		interrupts-extended = <&gpa1 3 IRQ_TYPE_EDGE_FALLING>;
++		vbus-supply = <&usb_otg_vbus>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			data-role = "dual";
++			power-role = "dual";
++			try-power-role = "sink";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					s2mm005_hs_ep: endpoint {
++						remote-endpoint = <&dwc3_hs_ep>;
++					};
++				};
++			};
++		};
++	};
+ };
+ 
+ &pinctrl_top {				/* vendor pinctrl@139B0000 = gpd banks */
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+index 575082cb1..851e68aee 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte.dts
+@@ -741,11 +741,19 @@ &usbdrd {
+ 
+ 	usb@0 {
+ 		/*
+-		 * Peripheral only for now; switch to "otg" once the SM5705
+-		 * MUIC driver provides a usb-role-switch.
++		 * Host or device, chosen by the S2MM005 Type-C controller through
++		 * the usb-role-switch (exynos7870.dtsi). Nothing attached or the
++		 * CCIC driver missing: stay a USB device (RNDIS/NCM gadget).
+ 		 */
+-		dr_mode = "peripheral";
++		dr_mode = "otg";
++		role-switch-default-mode = "peripheral";
+ 		maximum-speed = "high-speed";
++
++		port {
++			dwc3_hs_ep: endpoint {
++				remote-endpoint = <&s2mm005_hs_ep>;
++			};
++		};
+ 	};
+ };
+ 
+@@ -787,6 +795,13 @@ charger: charger {
+ 			enable-gpios = <&gpd1 3 GPIO_ACTIVE_LOW>;	/* z_batterydata:240 chg_gpio_en, polarity_en 0 */
+ 			monitored-battery = <&battery>;
+ 			extcon = <&muic>;
++
++			/* boost converter: 5.1 V VBUS for USB host (docks, sticks) */
++			usb_otg_vbus: usb-otg-vbus {
++				regulator-name = "usb_otg_vbus";
++				regulator-min-microvolt = <5100000>;
++				regulator-max-microvolt = <5100000>;
++			};
+ 		};
+ 	};
+ 
+@@ -845,6 +860,51 @@ muic_irq: muic-irq-pins {	/* common.dtsi:418-423 */
+ 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+ 		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+ 	};
++
++	usbpd_irq: usbpd-irq-pins {	/* ccic-s2mm005_01.dtsi: usbpd_irq */
++		samsung,pins = "gpa1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
++	};
++};
++
++/* ---- USB Type-C: Samsung S2MM005 CCIC on vendor i2c@13850000 (mainline i2c2) ---- */
++&i2c2 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	typec@33 {
++		compatible = "samsung,s2mm005";
++		reg = <0x33>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&usbpd_irq>;
++		interrupts-extended = <&gpa1 3 IRQ_TYPE_EDGE_FALLING>;
++		vbus-supply = <&usb_otg_vbus>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			data-role = "dual";
++			power-role = "dual";
++			try-power-role = "sink";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					s2mm005_hs_ep: endpoint {
++						remote-endpoint = <&dwc3_hs_ep>;
++					};
++				};
++			};
++		};
++	};
+ };
+ 
+ &pinctrl_top {				/* vendor pinctrl@139B0000 = gpd banks */
+-- 
+2.43.0
+

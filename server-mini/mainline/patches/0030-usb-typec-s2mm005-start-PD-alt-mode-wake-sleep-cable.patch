@@ -1,0 +1,261 @@
+From 6b220ad1673ed73500df403d2065d0af76570995 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 12:23:53 +0300
+Subject: [PATCH 30/31] usb: typec: s2mm005: start PD/alt mode, wake sleep
+ cable, gate VBUS on source state
+
+Send the vendor 'alternate mode start' (0x03 0x31) and 'power nego start'
+(0x03 0x42) commands at probe and after a CCIC reset; without them the
+CCIC waits in PE_SRC_Wait_New_Capabilities forever as a source and a dock
+renegotiates every 30-60 s. Enable auto LPM after a reset, wake the CCIC
+for a sleep-cable attach, and only switch our VBUS on once the CCIC is in
+a source state (3..7): enabling it earlier makes the CCIC drop the attach
+and discharge VBUS against the boost.
+
+Also fix the SM5705 MUIC: CONTROL.SW_OPEN is active low and has to be set
+or the D+/D- switches stay open (a USB host never sees the device), and
+tune the Exynos7870 HS PHY for host mode via phy_set_mode() (COMPDISTUNE 7,
+TXVREFTUNE 5, D+/D- pull-downs, as the vendor kernel does); with the
+device-mode tune every port reset fails.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ drivers/extcon/extcon-sm5705.c           |  9 ++-
+ drivers/phy/samsung/phy-exynos5-usbdrd.c | 50 +++++++++++++
+ drivers/usb/typec/s2mm005.c              | 92 +++++++++++++++++++++++-
+ 3 files changed, 145 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/extcon/extcon-sm5705.c b/drivers/extcon/extcon-sm5705.c
+index 29a7b7fc5..76b8b58cc 100644
+--- a/drivers/extcon/extcon-sm5705.c
++++ b/drivers/extcon/extcon-sm5705.c
+@@ -52,6 +52,7 @@
+ #define SM5705_MUIC_REG_MAX		0x37
+ 
+ /* CONTROL */
++/* 1: switches follow MANSW1/auto, 0: all D+/D- switches forced open */
+ #define SM5705_CTRL_SW_OPEN		BIT(4)
+ #define SM5705_CTRL_RAW_DATA		BIT(3)
+ /* 1: automatic switching, 0: manual switching (MANSW1 is used) */
+@@ -256,12 +257,14 @@ static int sm5705_muic_hw_init(struct sm5705_muic *muic)
+ 	int ret;
+ 
+ 	/*
+-	 * Manual switching (MANSW1 decides the D+/D- path), switches not
+-	 * forced open, interrupt output enabled.
++	 * Manual switching (MANSW1 decides the D+/D- path), interrupt output
++	 * enabled. SW_OPEN is active low: it must be 1 or the D+/D- switches
++	 * stay open (vendor CONTROL init value 0x1f). With it cleared only USB
++	 * device mode happened to work; a host never saw the attached device.
+ 	 */
+ 	ret = regmap_update_bits(regmap, SM5705_MUIC_REG_CTRL,
+ 				 SM5705_CTRL_SW_OPEN | SM5705_CTRL_AUTO_SW |
+-				 SM5705_CTRL_INT_MASK, 0);
++				 SM5705_CTRL_INT_MASK, SM5705_CTRL_SW_OPEN);
+ 	if (ret)
+ 		return ret;
+ 
+diff --git a/drivers/phy/samsung/phy-exynos5-usbdrd.c b/drivers/phy/samsung/phy-exynos5-usbdrd.c
+index a88ba95bd..d8f1d2923 100644
+--- a/drivers/phy/samsung/phy-exynos5-usbdrd.c
++++ b/drivers/phy/samsung/phy-exynos5-usbdrd.c
+@@ -1294,9 +1294,59 @@ static int exynos7870_usbdrd_phy_exit(struct phy *phy)
+ 	return 0;
+ }
+ 
++/*
++ * Host mode needs different HS PHY settings than device mode (vendor
++ * exynos_usbdrd_set_hstune(USBPHY_MODE_HOST) + config_host_mode): a higher
++ * disconnect threshold (COMPDISTUNE 7) and lower TX swing, plus the host
++ * D+/D- pull-downs. With the device-mode values the port detects a device
++ * but every port reset fails ("Cannot enable").
++ */
++static int exynos7870_usbdrd_phy_set_mode(struct phy *phy, enum phy_mode mode,
++					  int submode)
++{
++	struct phy_usb_instance *inst = phy_get_drvdata(phy);
++	struct exynos5_usbdrd_phy *phy_drd = to_usbdrd_phy(inst);
++	bool host = mode == PHY_MODE_USB_HOST;
++	u32 reg;
++	int ret;
++
++	if (mode != PHY_MODE_USB_HOST && mode != PHY_MODE_USB_DEVICE)
++		return 0;
++
++	ret = clk_bulk_prepare_enable(phy_drd->drv_data->n_clks, phy_drd->clks);
++	if (ret)
++		return ret;
++
++	reg = readl(phy_drd->reg_phy + EXYNOS5_DRD_PHYPARAM0);
++	reg &= ~(PHYPARAM0_TXVREFTUNE | PHYPARAM0_TXPREEMPAMPTUNE |
++		 PHYPARAM0_COMPDISTUNE);
++	if (host)
++		reg |= FIELD_PREP(PHYPARAM0_TXVREFTUNE, 0x5) |
++		       FIELD_PREP(PHYPARAM0_TXPREEMPAMPTUNE, 0x0) |
++		       FIELD_PREP(PHYPARAM0_COMPDISTUNE, 0x7);
++	else
++		reg |= FIELD_PREP(PHYPARAM0_TXVREFTUNE, 0xe) |
++		       FIELD_PREP(PHYPARAM0_TXPREEMPAMPTUNE, 0x0) |
++		       FIELD_PREP(PHYPARAM0_COMPDISTUNE, 0x3);
++	writel(reg, phy_drd->reg_phy + EXYNOS5_DRD_PHYPARAM0);
++
++	reg = readl(phy_drd->reg_phy + EXYNOS5_DRD_PHYUTMI);
++	if (host)
++		reg |= PHYUTMI_DPPULLDOWN | PHYUTMI_DMPULLDOWN;
++	else
++		reg &= ~(PHYUTMI_DPPULLDOWN | PHYUTMI_DMPULLDOWN);
++	writel(reg, phy_drd->reg_phy + EXYNOS5_DRD_PHYUTMI);
++
++	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);
++
++	dev_dbg(phy_drd->dev, "HS PHY tuned for %s\n", host ? "host" : "device");
++	return 0;
++}
++
+ static const struct phy_ops exynos7870_usbdrd_phy_ops = {
+ 	.init		= exynos7870_usbdrd_phy_init,
+ 	.exit		= exynos7870_usbdrd_phy_exit,
++	.set_mode	= exynos7870_usbdrd_phy_set_mode,
+ 	.power_on	= exynos5_usbdrd_phy_power_on,
+ 	.power_off	= exynos5_usbdrd_phy_power_off,
+ 	.owner		= THIS_MODULE,
+diff --git a/drivers/usb/typec/s2mm005.c b/drivers/usb/typec/s2mm005.c
+index 7bcd0dcda..d9d33ba06 100644
+--- a/drivers/usb/typec/s2mm005.c
++++ b/drivers/usb/typec/s2mm005.c
+@@ -42,6 +42,18 @@
+ #define S2MM005_FUNC_RESET		BIT(31)
+ 
+ #define S2MM005_PD_STATE_DETACHED	0
++#define S2MM005_PD_SRC_SEND_CAPS	3
++#define S2MM005_PD_SRC_DISABLED		7
++#define S2MM005_PD_SRC_WAIT_NEW_CAPS	14
++
++#define S2MM005_REG_LP_STATE		0x60
++#define S2MM005_LP_AUTO_LP_ENABLE	BIT(0)
++#define S2MM005_LP_SLEEP_CABLE		BIT(8)
++
++#define S2MM005_REG_I2C_CMD		0x10
++#define S2MM005_CMD_LPM			0x0f
++#define S2MM005_LPM_AUTO_ENABLE		0x06
++#define S2MM005_LPM_SLEEP_CABLE_WAKE	0x0d
+ 
+ struct s2mm005 {
+ 	struct i2c_client *client;
+@@ -84,6 +96,47 @@ static int s2mm005_write8(struct s2mm005 *s, u16 reg, u8 val)
+ 	return ret == 1 ? 0 : -EIO;
+ }
+ 
++static int s2mm005_write16(struct s2mm005 *s, u16 reg, u8 v0, u8 v1)
++{
++	u8 buf[4] = { reg >> 8, reg & 0xff, v0, v1 };
++	struct i2c_msg msg = {
++		.addr = s->client->addr, .flags = 0, .len = 4, .buf = buf,
++	};
++	int ret;
++
++	ret = i2c_transfer(s->client->adapter, &msg, 1);
++	if (ret < 0)
++		return ret;
++	return ret == 1 ? 0 : -EIO;
++}
++
++/* Vendor s2mm005_manual_LPM(): wake the CCIC with dummy reads, then send the LPM command. */
++static void s2mm005_lpm_cmd(struct s2mm005 *s, u8 cmd)
++{
++	u8 dummy;
++	int i;
++
++	for (i = 0; i < 5; i++)
++		s2mm005_read(s, 0x8, &dummy, 1);
++	udelay(10);
++	s2mm005_write16(s, S2MM005_REG_I2C_CMD, S2MM005_CMD_LPM, cmd);
++	dev_info(&s->client->dev, "LPM command 0x%02x\n", cmd);
++}
++
++/*
++ * Vendor set_enable_alternate_mode(START) + set_enable_powernego(1): let the
++ * CCIC run VDM discovery and PD power negotiation. Without these it waits in
++ * PE_SRC_Wait_New_Capabilities as a source.
++ */
++static void s2mm005_start_pd(struct s2mm005 *s)
++{
++	int r1, r2;
++
++	r1 = s2mm005_write16(s, S2MM005_REG_I2C_CMD, 0x03, 0x31);
++	r2 = s2mm005_write16(s, S2MM005_REG_I2C_CMD, 0x03, 0x42);
++	dev_info(&s->client->dev, "alternate mode + power nego start (%d %d)\n", r1, r2);
++}
++
+ static void s2mm005_set_vbus(struct s2mm005 *s, bool on)
+ {
+ 	int ret;
+@@ -125,6 +178,7 @@ static void s2mm005_update(struct s2mm005 *s)
+ 	u8 raw[4];
+ 	u32 st;
+ 	u8 pd_state;
++	u32 lp = 0;
+ 	bool attached, dfp, src;
+ 	int ret;
+ 
+@@ -140,12 +194,42 @@ static void s2mm005_update(struct s2mm005 *s)
+ 	dfp = st & S2MM005_FUNC_IS_DFP;
+ 	src = st & S2MM005_FUNC_IS_SOURCE;
+ 
++	if (!s2mm005_read(s, S2MM005_REG_LP_STATE, raw, sizeof(raw)))
++		lp = get_unaligned_le32(raw);
++
+ 	if (st != s->func_state)
+ 		dev_info(&s->client->dev,
+-			 "func_state 0x%08x: pd_state %u attached %d dfp %d src %d\n",
+-			 st, pd_state, attached, dfp, src);
++			 "func_state 0x%08x lp 0x%08x: pd_state %u attached %d dfp %d src %d\n",
++			 st, lp, pd_state, attached, dfp, src);
+ 	s->func_state = st;
+ 
++	/* CCIC (re)started: let it manage low-power mode itself, like the vendor driver. */
++	if (st & S2MM005_FUNC_RESET) {
++		if (!(lp & S2MM005_LP_AUTO_LP_ENABLE))
++			s2mm005_lpm_cmd(s, S2MM005_LPM_AUTO_ENABLE);
++		s2mm005_start_pd(s);
++	}
++
++	/*
++	 * A sink was detected while the CCIC sleeps ("sleep cable"): wake it
++	 * and wait for the next event instead of acting on this state. Acting
++	 * on it (VBUS on) makes the CCIC drop the attach right away.
++	 */
++	if (pd_state == S2MM005_PD_SRC_WAIT_NEW_CAPS && (lp & S2MM005_LP_SLEEP_CABLE)) {
++		s2mm005_lpm_cmd(s, S2MM005_LPM_SLEEP_CABLE_WAKE);
++		return;
++	}
++
++	/* As a source, only act once the CCIC is in a real source state. */
++	/*
++	 * As a source, switch VBUS on only once the CCIC is in a real source
++	 * state (as the vendor driver does). Turning it on earlier makes the
++	 * CCIC drop the attach and discharge VBUS against our boost.
++	 */
++	if (attached && src && !s->vbus_on &&
++	    (pd_state < S2MM005_PD_SRC_SEND_CAPS || pd_state > S2MM005_PD_SRC_DISABLED))
++		return;
++
+ 	if (!attached) {
+ 		s2mm005_set_vbus(s, false);
+ 		s2mm005_set_role(s, USB_ROLE_NONE);
+@@ -248,8 +332,10 @@ static int s2mm005_probe(struct i2c_client *client)
+ 		dev_warn(dev, "no connector node: roles are not reported\n");
+ 	}
+ 
+-	scoped_guard(mutex, &s->lock)
++	scoped_guard(mutex, &s->lock) {
++		s2mm005_start_pd(s);
+ 		s2mm005_update(s);
++	}
+ 
+ 	ret = devm_request_threaded_irq(dev, client->irq, NULL, s2mm005_irq,
+ 					IRQF_ONESHOT, "s2mm005", s);
+-- 
+2.43.0
+

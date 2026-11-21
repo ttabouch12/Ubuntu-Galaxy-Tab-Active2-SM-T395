@@ -3,6 +3,23 @@
 Native Ubuntu 24.04 LTS (arm64), **no Android underneath**, built to turn the tablet into a small
 always-on server with a touch screen. Install and first steps are in the [main README](../README.md).
 
+## Mainline (6.18) additions, 2026-11
+
+See [`MAINLINE.md`](MAINLINE.md) for the kernel side (DRM display, GPU, USB-C host, eMMC DDR52, r7).
+
+* **USB-C docks:** Ethernet, USB ports and USB storage through a USB-C dock (tested: HyperDrive Next HD4003GL,
+  RTL8153 gigabit). With a PD charger in the dock the tablet charges and stays host. USB 2.0 only, no HDMI.
+* **Dashboard** (`gta2-dash`, port 8088): system, containers, disks incl. SD card, Pi-hole stats (% blocked,
+  queries, blocked), network traffic, latency, outages and speed test from `gta2-netmon`; your own wallpaper from
+  `/data/gta2srv/share/wallpaper.jpg|png|webp`.
+* **Internet monitor** (`gta2-netmon.service`): pings the router, 1.1.1.1 and 8.8.8.8 every 10 s, logs outages,
+  hourly Cloudflare speed test only while Ethernet is up (heavy load can crash the QCA9377 Wi-Fi firmware).
+* **SD card:** shared over Samba as `\\<ip>\sdcard` (`gta2-share`); `gta2-sdformat` formats it ext4;
+  `gta2-docker-sd` moves Docker's data onto the card (`docker.service` waits for it, `gta2-sdwait.conf`).
+* **Tailscale** (native package): `sudo tailscale up --advertise-exit-node --advertise-routes=<lan>/24`;
+  IP forwarding in `91-gta2-tailscale.conf`.
+* **Battery limit for 24/7 use:** Settings or `/etc/gta2/charge_limit` (e.g. 80: stop at 80 %, resume at 75 %; 100 = off).
+
 ## 1.3 changes
 
 * **New interface.** The look is shared from `gta2ui.py`: anti-aliased rounded cards, switches, steppers, segmented

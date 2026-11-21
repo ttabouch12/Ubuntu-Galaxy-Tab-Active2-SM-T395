@@ -1,0 +1,117 @@
+#!/usr/bin/python3
+# gta2-netmon: small always-on network monitor for the dashboard (gta2-dash).
+#  - every 10 s: ping the router, 1.1.1.1 and 8.8.8.8 (latency), read interface byte counters (traffic rate)
+#  - internet up/down with an outage log (down = no public host answers for 2 checks in a row)
+#  - speed test every 60 min (and on request: touch /run/gta2/speedtest.now) against Cloudflare (download/upload)
+# Writes /run/gta2/netmon.json (live) and keeps history/outages in /var/lib/gta2/netmon.json across reboots.
+import json, os, re, subprocess, time
+
+RUN, VAR = '/run/gta2', '/var/lib/gta2'
+LIVE, STATE, TRIGGER = RUN + '/netmon.json', VAR + '/netmon.json', RUN + '/speedtest.now'
+SPEED_EVERY = 3600  # hourly (Ethernet via dock)
+def wired():  # auto test only on Ethernet: heavy load can crash the Wi-Fi firmware
+    import glob
+    return any(open(p).read().strip() == "up" for p in glob.glob("/sys/class/net/e*/operstate"))
+PUBLIC = ['1.1.1.1', '8.8.8.8']
+os.makedirs(RUN, exist_ok=True); os.makedirs(VAR, exist_ok=True)
+os.chmod(RUN, 0o1777)   # the dashboard (another user) drops speedtest.now here
+
+
+def sh(cmd, timeout=10):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except Exception:
+        return ''
+
+
+def ping(host):
+    m = re.search(r'time=([\d.]+)', sh(['ping', '-n', '-c1', '-W2', host], 4))
+    return round(float(m.group(1)), 1) if m else None
+
+
+def gateway():
+    m = re.search(r'default via (\S+)', sh(['ip', 'route', 'show', 'default']))
+    return m.group(1) if m else None
+
+
+def counters():
+    rx = tx = 0
+    for line in open('/proc/net/dev').readlines()[2:]:
+        name, data = line.split(':', 1)
+        name = name.strip()
+        if name == 'lo' or name.startswith(('docker', 'veth', 'br-', 'tailscale')):
+            continue
+        f = data.split()
+        rx += int(f[0]); tx += int(f[8])
+    return rx, tx
+
+
+def speedtest():
+    def curl(args, key):
+        out = sh(['curl', '-s', '-o', '/dev/null', '--max-time', '40', '-w', '%{' + key + '}'] + args, 45)
+        try:
+            return round(float(out) * 8 / 1e6, 1)   # bytes/s -> Mbit/s
+        except ValueError:
+            return None
+    down = curl(['https://speed.cloudflare.com/__down?bytes=25000000'], 'speed_download')
+    try:
+        p = subprocess.run(['curl', '-s', '-o', '/dev/null', '--max-time', '40', '-w', '%{speed_upload}',
+                            '--data-binary', '@-', 'https://speed.cloudflare.com/__up'],
+                           input=b'\0' * 5_000_000, capture_output=True, timeout=45)
+        up = round(float(p.stdout.decode()) * 8 / 1e6, 1)
+    except Exception:
+        up = None
+    return {'t': int(time.time()), 'down': down, 'up': up, 'ping': ping('1.1.1.1')}
+
+
+try:
+    st = json.load(open(STATE))
+except Exception:
+    st = {}
+st.setdefault('outages', []); st.setdefault('speed', []); st.setdefault('lat', [])
+last_save = 0
+prev = None
+fails = 0
+down_since = None
+last_speed = max([s['t'] for s in st['speed']] or [0])
+
+while True:
+    now = time.time()
+    gw = gateway()
+    lat = {'router': ping(gw) if gw else None}
+    for h in PUBLIC:
+        lat[h] = ping(h)
+    online = any(lat[h] is not None for h in PUBLIC)
+    fails = 0 if online else fails + 1
+    if fails >= 2 and down_since is None:
+        down_since = int(now)
+    if online and down_since is not None:
+        st['outages'].append({'start': down_since, 'end': int(now)})
+        st['outages'] = st['outages'][-50:]
+        down_since = None
+
+    rx, tx = counters()
+    rate = {'rx': 0, 'tx': 0}
+    if prev:
+        dt = max(1e-3, now - prev[0])
+        rate = {'rx': round(max(0, rx - prev[1]) * 8 / dt / 1e6, 2), 'tx': round(max(0, tx - prev[2]) * 8 / dt / 1e6, 2)}
+    prev = (now, rx, tx)
+
+    pub = [lat[h] for h in PUBLIC if lat[h] is not None]
+    st['lat'].append([int(now), min(pub) if pub else None, rate['rx'], rate['tx']])
+    st['lat'] = [x for x in st['lat'] if x[0] > now - 86400][-8640:]
+
+    if os.path.exists(TRIGGER) or (online and wired() and now - last_speed > SPEED_EVERY):
+        try: os.remove(TRIGGER)
+        except OSError: pass
+        json.dump({**st, 'testing': True, 'now': int(now)}, open(LIVE + '.tmp', 'w')); os.replace(LIVE + '.tmp', LIVE)
+        st['speed'].append(speedtest()); st['speed'] = st['speed'][-72:]
+        last_speed = time.time()
+
+    live = {'now': int(now), 'online': online and down_since is None, 'down_since': down_since, 'lat': lat,
+            'rate': rate, 'rx_total': rx, 'tx_total': tx, 'speed': st['speed'][-24:], 'outages': st['outages'][-10:],
+            'hist': [x for x in st['lat'] if x[0] > now - 3 * 3600][::6]}
+    json.dump(live, open(LIVE + '.tmp', 'w')); os.replace(LIVE + '.tmp', LIVE)
+    if now - last_save > 300:
+        json.dump(st, open(STATE + '.tmp', 'w')); os.replace(STATE + '.tmp', STATE); last_save = now
+    time.sleep(max(1, 10 - (time.time() - now)))

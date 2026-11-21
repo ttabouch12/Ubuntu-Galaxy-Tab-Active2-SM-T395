@@ -1,0 +1,60 @@
+From 78e784c9bb82e20e321658618792818f8e6c5c80 Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 13:18:09 +0300
+Subject: [PATCH 31/31] arm64: dts: gtactive2lte: eMMC high speed (DDR52)
+
+Add cap-mmc-highspeed to the eMMC (AJTD4R, eMMC 5.1). With the 8-bit bus
+and 1.8 V signalling the card then runs DDR52 at the 50 MHz the CIU allows:
+81 MB/s sequential read and 32 MB/s write instead of 22.5/16.7 MB/s in
+legacy 25 MHz mode. Verified with repeated write/read-back checksums.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A6dfuLUPRettgCGXrEiAvo
+---
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts   | 2 ++
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts | 2 ++
+ arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts | 2 ++
+ 3 files changed, 6 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts
+index 1e28c72b5..912c05fa4 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe.dts
+@@ -541,6 +541,8 @@ &mmc0 {
+ 	samsung,dw-mshc-ciu-div = <3>;
+ 	samsung,dw-mshc-sdr-timing = <0 4>;
+ 	samsung,dw-mshc-ddr-timing = <2 4>;
++	/* 52 MHz high speed; the card then runs DDR52 (8-bit, 1.8 V): ~81 MB/s read vs 22 MB/s legacy */
++	cap-mmc-highspeed;
+ 	non-removable;
+ 
+ 	status = "okay";
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts
+index 395527c2b..7e24f72a8 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe3g.dts
+@@ -550,6 +550,8 @@ &mmc0 {
+ 	samsung,dw-mshc-ciu-div = <3>;
+ 	samsung,dw-mshc-sdr-timing = <0 4>;
+ 	samsung,dw-mshc-ddr-timing = <2 4>;
++	/* 52 MHz high speed; the card then runs DDR52 (8-bit, 1.8 V): ~81 MB/s read vs 22 MB/s legacy */
++	cap-mmc-highspeed;
+ 	non-removable;
+ 
+ 	status = "okay";
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
+index b1af138eb..21de7ff49 100644
+--- a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g.dts
+@@ -550,6 +550,8 @@ &mmc0 {
+ 	samsung,dw-mshc-ciu-div = <3>;
+ 	samsung,dw-mshc-sdr-timing = <0 4>;
+ 	samsung,dw-mshc-ddr-timing = <2 4>;
++	/* 52 MHz high speed; the card then runs DDR52 (8-bit, 1.8 V): ~81 MB/s read vs 22 MB/s legacy */
++	cap-mmc-highspeed;
+ 	non-removable;
+ 
+ 	status = "okay";
+-- 
+2.43.0
+
