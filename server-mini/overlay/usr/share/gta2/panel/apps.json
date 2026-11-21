@@ -9,7 +9,7 @@
   "mem": "160m", "ram": 50, "web_port": 3000, "conflicts": ["pihole"],
   "note": "Uses port 53: needs systemd-resolved's stub listener off (DNSStubListener=no). Setup wizard on :3000, then the UI moves to :8082."},
  {"id": "pihole", "name": "Pi-hole", "cat": "Network", "desc": "Classic DNS ad blocker", "image": "pihole/pihole:latest",
-  "ports": ["53:53/tcp", "53:53/udp", "8083:80"], "volumes": ["{app}/etc-pihole:/etc/pihole"], "env": ["TZ={tz}", "FTLCONF_webserver_api_password=gta2"],
+  "ports": ["53:53/tcp", "53:53/udp", "8083:80"], "volumes": ["{app}/etc-pihole:/etc/pihole"], "env": ["TZ={tz}", "FTLCONF_webserver_api_password=gta2", "FTLCONF_dns_listeningMode=ALL"],
   "mem": "192m", "ram": 90, "web_port": 8083, "web_path": "/admin", "conflicts": ["adguard"],
   "note": "Web password: gta2 (change it). Uses port 53 like AdGuard: install only one."},
  {"id": "homeassistant", "name": "Home Assistant", "cat": "Smart home", "desc": "Home automation hub", "image": "ghcr.io/home-assistant/home-assistant:stable",

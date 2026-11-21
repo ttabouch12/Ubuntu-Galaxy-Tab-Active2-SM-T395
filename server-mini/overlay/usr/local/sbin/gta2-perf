@@ -1,0 +1,12 @@
+#!/bin/sh
+# mainline 6.x: schedutil with a 2 ms rate limit, clusters capped at 1794 MHz (1.9-2.0 GHz hangs),
+# MGLRU with all features the CPU supports. No-op on 3.18.
+[ "$(uname -r | cut -d. -f1)" -ge 6 ] || exit 0
+for p in /sys/devices/system/cpu/cpufreq/policy*; do
+  [ -d "$p" ] || continue
+  echo schedutil > $p/scaling_governor 2>/dev/null
+  echo 2000 > $p/schedutil/rate_limit_us 2>/dev/null
+  max=$(cat $p/cpuinfo_max_freq); [ "$max" -gt 1794000 ] && max=1794000; echo $max > $p/scaling_max_freq
+done
+echo y > /sys/kernel/mm/lru_gen/enabled 2>/dev/null
+exit 0

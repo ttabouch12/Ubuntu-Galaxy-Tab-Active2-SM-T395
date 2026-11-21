@@ -1,5 +1,5 @@
 [Unit]
-Description=gta2: Portainer CE (Docker web UI on :9443), pulled on first boot with network
+Description=gta2: Portainer CE (Docker web UI on :9443, 500+ app templates), pulled on first boot with network
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
@@ -8,6 +8,6 @@ Type=oneshot
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=60
-ExecStart=/bin/sh -c 'docker inspect portainer >/dev/null 2>&1 && exec docker start portainer; docker volume create portainer_data && docker run -d --name portainer --restart=always -p 9443:9443 -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:lts'
+ExecStart=/bin/sh -c 'docker inspect portainer >/dev/null 2>&1 && exec docker start portainer; docker volume create portainer_data && docker run -d --name portainer --restart=always -p 9443:9443 -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data portainer/portainer-ce:lts --templates https://raw.githubusercontent.com/Lissy93/portainer-templates/main/templates.json'
 [Install]
 WantedBy=multi-user.target

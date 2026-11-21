@@ -1,0 +1,4 @@
+# eMMC, zram and the loop-mounted root: no I/O scheduler, modest readahead
+ACTION=="add|change", KERNEL=="mmcblk[0-9]", ATTR{queue/scheduler}="none", ATTR{queue/read_ahead_kb}="128"
+ACTION=="add|change", KERNEL=="zram[0-9]", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="loop[0-9]", ATTR{queue/scheduler}="none"

@@ -30,10 +30,16 @@ state = {'on': True, 'saved': None, 'last': time.time()}
 def screen(on):
     if on == state['on']:
         return
+    # mainline exynosdrm: real panel power-off/on (gta2-fbinit); 3.18 DECON / simpledrm: backlight only
+    drm = 'exynos' in rd('/sys/class/graphics/fb0/name', '')
     if on:
+        if drm:
+            subprocess.call(['sudo', '-n', 'python3', '/usr/local/sbin/gta2-fbinit.py', '--wake'])
         bl(state['saved'] or MAX // 2)
-    else:  # backlight only: powering DECON down/up without hwcomposer is not reliable on this kernel
+    else:
         state['saved'] = bl(); subprocess.call(['sudo', '-n', 'sh', '-c', 'echo 0 > %s/brightness' % BL])
+        if drm:
+            subprocess.call(['sudo', '-n', 'python3', '/usr/local/sbin/gta2-fbinit.py', '--sleep'])
     state['on'] = on
 
 

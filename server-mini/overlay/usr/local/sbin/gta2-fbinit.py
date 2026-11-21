@@ -5,6 +5,19 @@
 #             after which decon only scans out again after a fresh FBIOPUT + FBIOPAN)
 #   --sleep   screen off (FB_BLANK_POWERDOWN: panel + decon off)
 import os, fcntl, struct, sys, time
+# mainline (6.x): simpledrm needs nothing (it is already XRGB; the 3.18 DECON bitfields would swap red/blue).
+# exynosdrm (DECON + DSI + s6d7aa0): --sleep powers the panel down; boot/--wake power-cycle it, because the
+# first modeset after the bootloader's splash leaves a doubled, colour-fringed image until the panel is reset.
+if int(os.uname().release.split('.')[0]) >= 6:
+    try: name = open('/sys/class/graphics/fb0/name').read()
+    except OSError: name = ''
+    if 'exynos' not in name: sys.exit(0)
+    fd = os.open('/dev/fb0', os.O_RDWR)
+    def blank(m):
+        try: fcntl.ioctl(fd, 0x4611, m)                           # FBIOBLANK
+        except OSError: pass
+    if '--sleep' in sys.argv: blank(4); sys.exit(0)               # FB_BLANK_POWERDOWN: panel off
+    blank(4); time.sleep(0.3); blank(0); sys.exit(0)              # power-cycle, then on
 fd = os.open('/dev/fb0', os.O_RDWR)
 def io(req, arg):
     try: return fcntl.ioctl(fd, req, arg)
