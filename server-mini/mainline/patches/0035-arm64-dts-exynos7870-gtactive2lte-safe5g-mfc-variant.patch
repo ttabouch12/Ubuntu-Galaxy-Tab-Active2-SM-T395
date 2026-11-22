@@ -1,0 +1,82 @@
+From 101d8819a7a2743f54c5184be1a5deb59a5dd90b Mon Sep 17 00:00:00 2001
+From: ttabouch12 <ttabouch12@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 14:34:31 +0300
+Subject: [PATCH] arm64: dts: exynos7870-gtactive2lte: safe5g-mfc variant with
+ MFC video codec
+
+Adds the MFCMSCL power domain (PMU 0x10484060), the MFC SysMMU
+(0x12c90000, irq 352) and the MFC v10 codec (0x12c30000, irq 354), and
+ties cmu_mfcmscl to the power domain so clock register reads never hit
+a powered-off block. Used with patch 0034 for hardware H.264 decode.
+---
+ arch/arm64/boot/dts/exynos/Makefile           |  1 +
+ .../exynos7870-gtactive2lte-safe5g-mfc.dts    | 45 +++++++++++++++++++
+ 2 files changed, 46 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g-mfc.dts
+
+diff --git a/arch/arm64/boot/dts/exynos/Makefile b/arch/arm64/boot/dts/exynos/Makefile
+index 487993d88..eb85d017c 100644
+--- a/arch/arm64/boot/dts/exynos/Makefile
++++ b/arch/arm64/boot/dts/exynos/Makefile
+@@ -13,6 +13,7 @@ dtb-$(CONFIG_ARCH_EXYNOS) += \
+ 	exynos7870-gtactive2lte-safe3.dtb \
+ 	exynos7870-gtactive2lte-safe3g.dtb \
+ 	exynos7870-gtactive2lte-safe5g.dtb	\
++	exynos7870-gtactive2lte-safe5g-mfc.dtb	\
+ 	exynos7870-gtactive2lte-safe4.dtb	\
+ 	exynos7870-gtactive2lte-safe5.dtb	\
+ 	exynos7870-j6lte.dtb		\
+diff --git a/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g-mfc.dts b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g-mfc.dts
+new file mode 100644
+index 000000000..c0e0b3382
+--- /dev/null
++++ b/arch/arm64/boot/dts/exynos/exynos7870-gtactive2lte-safe5g-mfc.dts
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Galaxy Tab Active2 (SM-T395): safe5g + MFC (hardware video codec, v10-class) for V4L2 M2M decode.
++ * Values from the Samsung 3.18 exynos7870.dtsi: MFC @ 0x12c30000 IRQ 354, SysMMU @ 0x12c90000 IRQ 352,
++ * power domain MFCMSCL @ PMU 0x10484060.
++ */
++#include "exynos7870-gtactive2lte-safe5g.dts"
++
++&{/soc@0} {
++	pd_mfcmscl: power-domain@10484060 {
++		compatible = "samsung,exynos5433-pd";
++		reg = <0x10484060 0x20>;
++		#power-domain-cells = <0>;
++		label = "MFCMSCL";
++	};
++
++	sysmmu_mfc: iommu@12c90000 {
++		compatible = "samsung,exynos-sysmmu";
++		reg = <0x12c90000 0x1000>;
++		interrupts = <GIC_SPI 352 IRQ_TYPE_LEVEL_HIGH>;
++		#iommu-cells = <0>;
++		clocks = <&cmu_mfcmscl CLK_GOUT_MFCMSCL_MFC>;
++		clock-names = "sysmmu";
++		power-domains = <&pd_mfcmscl>;
++	};
++
++	mfc: codec@12c30000 {
++		compatible = "samsung,mfc-v10";
++		reg = <0x12c30000 0x10000>;
++		interrupts = <GIC_SPI 354 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&cmu_mfcmscl CLK_GOUT_MFCMSCL_MFC>;
++		clock-names = "mfc";
++		iommus = <&sysmmu_mfc>;
++		power-domains = <&pd_mfcmscl>;
++	};
++};
++
++/*
++ * clk-exynos7870 registers its CMUs without runtime PM, so nothing powers MFCMSCL up before its CMU registers
++ * are read (clk_summary, gate status). Putting the CMU in the domain keeps the domain on (a device without
++ * runtime PM counts as active for genpd): no bus hang when the SysMMU/MFC go idle.
++ */
++&cmu_mfcmscl {
++	power-domains = <&pd_mfcmscl>;
++};
+-- 
+2.43.0
+

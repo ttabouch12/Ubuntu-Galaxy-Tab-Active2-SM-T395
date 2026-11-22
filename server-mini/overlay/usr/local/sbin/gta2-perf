@@ -10,6 +10,7 @@ echo 1 > $C/boost 2>/dev/null
 for p in $C/policy*; do
   [ -d "$p" ] || continue
   echo ondemand > $p/scaling_governor 2>/dev/null || echo schedutil > $p/scaling_governor
+  echo 1248000 > $p/scaling_min_freq  # MINF: no wake-up lag on touch (runs on the charger)
   max=$(cat $p/cpuinfo_max_freq); [ "$max" -gt 1794000 ] && max=1794000; echo $max > $p/scaling_max_freq
   for g in $p/ondemand $C/ondemand; do
     [ -d $g ] || continue
@@ -23,3 +24,7 @@ L=$(losetup -j /userdata/gta2srv/ml/rootfs.img 2>/dev/null | cut -d: -f1 | head 
 [ -n "$L" ] && losetup --direct-io=on "$L" 2>/dev/null
 mount -o remount,noatime,commit=60 /userdata 2>/dev/null
 exit 0
+# GPULOCK: Mali T830 faults (sched timeout / page fault) when devfreq retunes its clock under load on this board
+# (voltage rail is fixed at 900 mV). One fixed clock = no faults. 545 MHz is plenty for the compositor.
+G=/sys/class/devfreq/11400000.gpu
+[ -d $G ] && { echo 1001000000 > $G/max_freq; echo 676000000 > $G/min_freq; echo 676000000 > $G/max_freq; } 2>/dev/null

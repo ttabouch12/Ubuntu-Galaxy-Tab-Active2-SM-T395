@@ -1,0 +1,22 @@
+#!/usr/bin/python3
+# gta2-60hz: run the Tab Active2 panel at 60 Hz instead of 30 Hz.
+# Mainline exynos7_drm_decon rounds the pixel-clock divider UP: vclk 69 MHz / mode 68.43 MHz -> divider 2 -> 30 Hz.
+# Until the fixed exynosdrm module is installed, set the divider to 1 (69 MHz = 60.5 Hz) after every mode set
+# (X start, screen on). Exynos 7870 DECON only; no-op when already 1.
+import mmap, os, struct, sys
+BASE = 0x14830000
+try:
+    compat = open('/proc/device-tree/soc@0/display-controller@14830000/compatible', 'rb').read()
+except OSError:
+    sys.exit(0)
+if b'samsung,exynos7870-decon' not in compat:
+    sys.exit(0)
+fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
+m = mmap.mmap(fd, 0x1000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=BASE)
+r = lambda o: struct.unpack('<I', m[o:o + 4])[0]
+def w(o, v): m[o:o + 4] = struct.pack('<I', v)
+if r(0x14) & 0xff or r(0x18) & 0xff:            # VCLKCON1/2 CLKVAL_NUM_VCLK != 0 -> divider > 1
+    w(0x14, 0); w(0x18, 0)
+    w(0x10, r(0x10) | 0x100)                     # VCLKCON0_CLKVALUP
+    w(0x710, r(0x710) | 1)                       # DECON_UPDATE_STANDALONE_F
+    print('gta2-60hz: pixel clock divider 2 -> 1 (60 Hz)')

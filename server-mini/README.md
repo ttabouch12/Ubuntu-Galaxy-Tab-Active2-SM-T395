@@ -3,6 +3,45 @@
 Native Ubuntu 24.04 LTS (arm64), **no Android underneath**, built to turn the tablet into a small
 always-on server with a touch screen. Install and first steps are in the [main README](../README.md).
 
+## Metro home, desktop mode and hardware video, 2026-11-22
+
+| Home | Apps | Second screen | Settings |
+|---|---|---|---|
+| ![home](docs/screenshots/1-home.png) | ![apps](docs/screenshots/2-apps.png) | ![screen](docs/screenshots/3-screen.png) | ![settings](docs/screenshots/4-settings.png) |
+
+* **Real 60 Hz:** the panel was running at 30 Hz. `exynos7_drm_decon` rounded its clock divider up
+  (69 MHz vs 68.43 MHz pixel clock, divider 2). `gta2-60hz` writes divider 1 at session start and after every
+  screen-on; the proper kernel fix is patch [0033](mainline/patches/0033-drm-exynos7-decon-closest-clkdiv-60hz.patch).
+* **Native Metro home (Qt Quick, `gta2-home`):** Windows Phone 7/8 style panorama (home · apps · screen · settings),
+  live tiles with smooth colour/number transitions, a detail page behind every tile, turnstile animations and the
+  app-launch flip, on-screen back / home / keyboard bar (`gta2-navbar`). Holds 60 fps; the WebKit page
+  (`usr/share/gta2/home`) stays as a fallback (`~/.config/gta2/webhome`). Everything runs through the same
+  local API (`gta2-dash` on :8088, `/api`, `/live`, `/detail`, `/ctl` - write actions only from the tablet itself).
+* **Settings ported to the home:** Wi-Fi, hotspot/tether, VPN, Bluetooth, display (brightness, screen timeout,
+  navbar), battery limit, performance, file sharing, SSH, date & time, device, updates, storage, interface, power, about.
+* **Desktop mode (USB-C dock):** LXQt with the KDE Breeze look, landscape, mouse cursor; `gta2-desktop on|off` or the
+  *desktop* tile. The 7870 has no DisplayPort alt-mode, so it uses the tablet's own screen.
+* **App store:** [Pi-Apps](https://github.com/Botspot/pi-apps) via `gta2-piapps` (Pi-Apps detects the CPU from
+  `/sbin/init`, which is a script here; the wrapper binds a real arm64 binary over it in a private mount namespace,
+  Pi-Apps itself stays unmodified). Installed apps show up as tiles with their icons; long-press to pin, uninstall
+  or move single-folder apps to the external drive. CasaOS stays the store for Docker apps.
+* **Hardware video decode (MFC):** H.264 through the Samsung MFC with mainline `s5p-mfc`
+  (patches [0034](mainline/patches/0034-media-s5p-mfc-exynos7870-v10-iova-window-dec-opts.patch) +
+  [0035](mainline/patches/0035-arm64-dts-exynos7870-gtactive2lte-safe5g-mfc-variant.patch)). The 7870's MFC only
+  reaches buffers within 256 MB above its firmware, so the driver now places the firmware at the bottom of the
+  IOVA space and keeps every buffer in that window. 1080p30 playback: ~6 % of one core vs ~57 % in software.
+  `ffmpeg -c:v h264_v4l2m2m`, Moonlight (V4L2 M2M), Firefox with `media.hardware-video-decoding.force-enabled`.
+  The firmware is Samsung's `mfc_fw.bin` from your own tablet's vendor partition, copied to
+  `/lib/firmware/s5p-mfc-v10.fw`; it is not included here.
+* **GPU:** Mali-T830 (panfrost) locked at 676 MHz by `80-gta2-gpu.rules` - retuning the clock under load caused GPU faults.
+  WebKit's GPU path tops out at 15-30 fps on this chip; Qt Quick renders a frame in under 8 ms.
+* **Boot splash:** Plymouth theme `gta2` (title + Windows Phone loading dots), quiet kernel and systemd output.
+  U-Boot's own text remains (silent U-Boot is prepared in `build/docker/ub.sh`, untested).
+* **Moonlight:** the *moonlight* button starts `moonlight-qt` (EGL). spacedesk's browser viewer was discontinued; for
+  an extended Windows screen use Sunshine + a virtual display driver on the PC and Moonlight on the tablet.
+* **External drive:** CasaOS app data can live on the USB drive (`/DATA/AppData` link) while Pi-hole and Portainer
+  stay on the tablet.
+
 ## Mainline (6.18) additions, 2026-11
 
 See [`MAINLINE.md`](MAINLINE.md) for the kernel side (DRM display, GPU, USB-C host, eMMC DDR52, r7).

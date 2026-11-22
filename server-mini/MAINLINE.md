@@ -61,7 +61,7 @@ label good
   menu label Ubuntu Server Mini (mainline 6.18, r7)
   linux /gta2srv/ml/Image
   fdt /gta2srv/ml/exynos7870-gtactive2lte-safe5g.dtb
-  append console=tty0 loglevel=4 fbcon=logo-count:1 panic=10 clk_ignore_unused pd_ignore_unused fbcon=rotate:2 s3c2410_wdt.tmr_atboot=0
+  append console=tty0 loglevel=4 fbcon=logo-count:1 panic=10 clk_ignore_unused pd_ignore_unused fbcon=rotate:2 s3c2410_wdt.tmr_atboot=0 quiet splash loglevel=3 systemd.show_status=false rd.udev.log_level=3 udev.log_level=3 vt.global_cursor_default=0 logo.nologo plymouth.ignore-serial-consoles
 ```
 
 Notes:
@@ -125,3 +125,12 @@ Install: copy `Image` and `exynos7870-gtactive2lte-safe3.dtb` to `/data/gta2srv/
 
 Exynos 7870 mainline work: Kaustabh Chakraborty and the exynos7870-mainline / postmarketOS community.
 SM5705, FTS8, TMU, CPU clock, charger and board support for this tablet: this repo. All GPL-2.0.
+
+## Boot splash
+
+Quiet kernel/systemd output (cmdline above) plus a plymouth script theme (`/usr/share/plymouth/themes/gta2`):
+black screen, "gta2srv", five accent-blue dots sliding Windows Phone style. `gta2-gui` runs
+`plymouth quit --retain-splash` before X so there is no text flash between splash and home screen.
+Without `quiet splash` (older extlinux.conf) the boot shows text as before. Previous config: `extlinux.conf.good_noquiet`.
+U-Boot still prints its own text; `build/docker/ub.sh` now builds a silent U-Boot (text only on Volume-Down menu
+or a boot failure) - not flashed yet.

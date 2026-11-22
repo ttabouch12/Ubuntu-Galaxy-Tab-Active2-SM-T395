@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Rotate screen
+Comment=Turn the desktop to the other landscape side
+Exec=/usr/local/bin/gta2-desktop rotate
+Icon=object-rotate-right
+Categories=System;

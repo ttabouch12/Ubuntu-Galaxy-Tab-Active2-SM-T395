@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # gta2-netmon: small always-on network monitor for the dashboard (gta2-dash).
-#  - every 10 s: ping the router, 1.1.1.1 and 8.8.8.8 (latency), read interface byte counters (traffic rate)
+#  - every 2 s (TICK): ping the router, 1.1.1.1 and 8.8.8.8 (latency), read interface byte counters (traffic rate)
 #  - internet up/down with an outage log (down = no public host answers for 2 checks in a row)
 #  - speed test every 60 min (and on request: touch /run/gta2/speedtest.now) against Cloudflare (download/upload)
 # Writes /run/gta2/netmon.json (live) and keeps history/outages in /var/lib/gta2/netmon.json across reboots.
@@ -25,7 +25,7 @@ def sh(cmd, timeout=10):
 
 
 def ping(host):
-    m = re.search(r'time=([\d.]+)', sh(['ping', '-n', '-c1', '-W2', host], 4))
+    m = re.search(r'time=([\d.]+)', sh(['ping', '-n', '-c1', '-W1', host], 2))
     return round(float(m.group(1)), 1) if m else None
 
 
@@ -68,12 +68,14 @@ try:
     st = json.load(open(STATE))
 except Exception:
     st = {}
-st.setdefault('outages', []); st.setdefault('speed', []); st.setdefault('lat', [])
+st.setdefault('outages', []); st.setdefault('speed', []); st.setdefault('lat', []); st.setdefault('tgt', [])
 last_save = 0
 prev = None
 fails = 0
 down_since = None
 last_speed = max([s['t'] for s in st['speed']] or [0])
+TICK, HIST_EVERY = 2, 10   # live values every 2 s, history (charts) every 10 s
+last_hist = 0
 
 while True:
     now = time.time()
@@ -83,7 +85,7 @@ while True:
         lat[h] = ping(h)
     online = any(lat[h] is not None for h in PUBLIC)
     fails = 0 if online else fails + 1
-    if fails >= 2 and down_since is None:
+    if fails >= 5 and down_since is None:   # ~10 s without any answer
         down_since = int(now)
     if online and down_since is not None:
         st['outages'].append({'start': down_since, 'end': int(now)})
@@ -98,8 +100,13 @@ while True:
     prev = (now, rx, tx)
 
     pub = [lat[h] for h in PUBLIC if lat[h] is not None]
-    st['lat'].append([int(now), min(pub) if pub else None, rate['rx'], rate['tx']])
-    st['lat'] = [x for x in st['lat'] if x[0] > now - 86400][-8640:]
+    if now - last_hist >= HIST_EVERY:
+        last_hist = now
+        st['lat'].append([int(now), min(pub) if pub else None, rate['rx'], rate['tx']])
+        st['lat'] = [x for x in st['lat'] if x[0] > now - 86400][-8640:]
+        # per-target latency (None = lost) for the detail page: [t, router, 1.1.1.1, 8.8.8.8], 3 h
+        st['tgt'].append([int(now)] + [lat.get(h) for h in ['router'] + list(PUBLIC)])
+        st['tgt'] = [x for x in st['tgt'] if x[0] > now - 3 * 3600][-1080:]
 
     if os.path.exists(TRIGGER) or (online and wired() and now - last_speed > SPEED_EVERY):
         try: os.remove(TRIGGER)
@@ -110,8 +117,9 @@ while True:
 
     live = {'now': int(now), 'online': online and down_since is None, 'down_since': down_since, 'lat': lat,
             'rate': rate, 'rx_total': rx, 'tx_total': tx, 'speed': st['speed'][-96:], 'outages': st['outages'][-10:],
-            'hist': [x for x in st['lat'] if x[0] > now - 3 * 3600][::6]}
+            'hist': [x for x in st['lat'] if x[0] > now - 3 * 3600][::6],
+            'tgt_names': ['router'] + list(PUBLIC), 'tgt': st['tgt']}
     json.dump(live, open(LIVE + '.tmp', 'w')); os.replace(LIVE + '.tmp', LIVE)
     if now - last_save > 300:
         json.dump(st, open(STATE + '.tmp', 'w')); os.replace(STATE + '.tmp', STATE); last_save = now
-    time.sleep(max(1, 10 - (time.time() - now)))
+    time.sleep(max(0.5, TICK - (time.time() - now)))

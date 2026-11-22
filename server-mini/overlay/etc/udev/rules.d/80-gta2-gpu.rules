@@ -1,0 +1,1 @@
+ACTION=="add|change", SUBSYSTEM=="devfreq", KERNEL=="11400000.gpu", RUN+="/bin/sh -c 'echo 676000000 > /sys%p/min_freq; echo 676000000 > /sys%p/max_freq'"

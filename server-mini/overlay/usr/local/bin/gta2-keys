@@ -1,48 +1,148 @@
 #!/usr/bin/python3
-# gta2srv hardware keys (runs inside the X session as the desktop user)
-#  POWER: screen off/on   VOL+/VOL-: brightness   HOME: back to launcher
-#  BACK: Escape            RECENTS: on-screen keyboard on/off
-import os, struct, glob, select, subprocess, fcntl, time
-BL = glob.glob('/sys/class/backlight/*')[0]
-MAX = int(open(BL + '/max_brightness').read())
-def devs():
-    out = []
-    for d in glob.glob('/sys/class/input/event*'):
-        try: n = open(d + '/device/name').read().strip()
-        except OSError: continue
-        if n in ('gpio_keys', 'sec_touchscreen'):
-            out.append(open('/dev/input/' + os.path.basename(d), 'rb', buffering=0))
-    return out
+# gta2srv hardware keys + screen timeout (runs in the X session as the desktop user, next to the web home)
+#   POWER screen off/on   VOL+/- brightness   HOME back to the home page (closes VNC, Moonlight, terminal, keyboard)
+#   BACK back / Esc       RECENTS on-screen keyboard
+#   gta2-keys --screen-off   ask the running instance to turn the screen off (used by the web Settings)
+import os, sys, struct, glob, select, subprocess, signal, time, json
+PIDF = '/tmp/gta2-keys.pid'
+NAV = '/tmp/gta2-nav.cmd'   # on-screen navbar (gta2-navbar) and scripts: 'home' / 'back' / 'keyboard'
+for _f in ('--home', '--back', '--keyboard'):
+    if _f in sys.argv:
+        open(NAV, 'w').write(_f[2:] + ' %f\n' % time.time()); sys.exit(0)
+if '--screen-off' in sys.argv:
+    try: os.kill(int(open(PIDF).read()), signal.SIGUSR1)
+    except Exception: pass
+    sys.exit(0)
+open(PIDF, 'w').write(str(os.getpid()))
+BL = (glob.glob('/sys/class/backlight/*') or [''])[0]
+MAX = int(open(BL + '/max_brightness').read()) if BL else 255
+UI = os.path.expanduser('~/.config/gta2/ui.json')
+HOME_URL = 'http://127.0.0.1:8088/#home'
+
+
+def sh(*c): return subprocess.call(list(c), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def out(c):
+    try: return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=3).stdout.strip()
+    except Exception: return ''
+
+
 def bl(v=None):
-    if v is None: return int(open(BL + '/brightness').read())
-    v = max(5, min(MAX, v))
-    subprocess.call(['sudo', '-n', 'sh', '-c', 'echo %d > %s/brightness' % (v, BL)])
-screen_on, saved = True, None
+    if v is None:
+        try: return int(open(BL + '/brightness').read())
+        except Exception: return MAX // 2
+    sh('sudo', '-n', 'sh', '-c', 'echo %d > %s/brightness' % (max(0, min(MAX, v)), BL))
+
+
+st = {'on': True, 'saved': None, 'last': time.time()}
+
+
 def screen(on):
-    global screen_on, saved
+    if on == st['on']: return
     if on:
-        subprocess.call(['sudo', '-n', 'python3', '/usr/local/sbin/gta2-fbinit.py'])
-        bl(saved or MAX // 2)
+        sh('xset', '+dpms'); sh('xset', 'dpms', 'force', 'on'); bl(st['saved'] or MAX // 2)
+        sh('sudo', '-n', '/usr/local/sbin/gta2-60hz')   # screen on re-runs the mode set: keep 60 Hz
     else:
-        saved = bl(); bl(5)
-        subprocess.call(['sudo', '-n', 'sh', '-c', 'echo 0 > %s/brightness; echo 1 > /sys/class/graphics/fb0/blank' % BL])
-    screen_on = on
-def x(*a): subprocess.Popen(['xdotool'] + list(a))
-def kbd():
-    if subprocess.call(['pkill', '-x', 'matchbox-keyboa']) != 0:
-        subprocess.Popen(['matchbox-keyboard'])
+        st['saved'] = bl(); bl(0); sh('xset', '+dpms'); sh('xset', 'dpms', 'force', 'off')
+    st['on'] = on; st['last'] = time.time()
+
+
+def kiosk():  # surf's real toplevel is the one with a title "... | page" (the other is the group leader)
+    for w in out('xdotool search --class surf').split():
+        if ' | ' in out('xdotool getwindowname %s' % w): return w
+    return None
+
+
+DESKTOP_FLAG = '/home/gta2/.config/gta2/desktop'
+
+
+def home():
+    if os.path.exists(DESKTOP_FLAG):  # desktop mode: HOME opens the IceWM start menu, never closes apps
+        sh('xdotool', 'key', 'ctrl+Escape'); return
+    sh('xdotool', 'mouseup', '1')  # a stuck synthetic button blocks touch
+    sh('sudo', '-n', 'systemctl', 'stop', 'gta2app-*')  # desktop apps launched from the home screen
+    for p in ('vncviewer', 'moonlight-qt', 'moonlight', 'xterm', 'matchbox-keyboa'):
+        sh('pkill', '-x', p)
+    if sh('pgrep', '-f', 'home-qml/Main.qml') == 0:  # native QML home: close web pages too, tell it to reset
+        sh('pkill', '-x', 'surf')
+        open('/tmp/gta2-home.cmd', 'w').write('home %f\n' % time.time())
+        sh('xdotool', 'search', '--name', '^gta2-home$', 'windowactivate'); return
+    if os.path.exists('/tmp/gta2-web.pid') and sh('pkill', '-USR1', '-f', 'bin/gta2-web') == 0:
+        sh('xdotool', 'search', '--class', 'gta2', 'windowactivate'); return
+    w = kiosk()
+    if w:
+        sh('xprop', '-id', w, '-f', '_SURF_GO', '8u', '-set', '_SURF_GO', HOME_URL + '-%d' % time.time())
+        sh('xdotool', 'windowactivate', w)
+
+
+def back():
+    a = out('xdotool getactivewindow getwindowclassname').lower()
+    if 'gta2' in a or 'net.gta2.web' in a: sh('pkill', '-USR2', '-f', 'bin/gta2-web')
+    elif 'surf' in a: sh('xdotool', 'key', 'ctrl+h')   # surf: history back
+    else: sh('xdotool', 'key', 'Escape')
+
+
+def timeout_min():
+    try: return int(json.load(open(UI)).get('screen_off', 0))
+    except Exception: return 0
+
+
+signal.signal(signal.SIGUSR1, lambda *a: screen(False))
+
+
+def keyboard():
+    sh('sh', '-c', 'pkill -x matchbox-keyboa || matchbox-keyboard &')
+
+
+nav_m = os.path.getmtime(NAV) if os.path.exists(NAV) else 0
+
+
+def nav():  # navbar buttons: same actions as the hardware keys
+    global nav_m
+    try: m = os.path.getmtime(NAV)
+    except OSError: return
+    if m == nav_m: return
+    nav_m = m
+    try: c = open(NAV).read().split()[0]
+    except Exception: return
+    if not st['on']: screen(True); return
+    st['last'] = time.time()
+    if c == 'home': home()
+    elif c == 'back': back()
+    elif c == 'keyboard': keyboard()
+
+
+def devs():
+    fs = []
+    for d in glob.glob('/sys/class/input/event*'):
+        try: n = open(d + '/device/name').read().strip().lower()
+        except OSError: continue
+        if 'gpio' in n or 'touch' in n or 'key' in n or 'fts' in n:
+            try: fs.append(open('/dev/input/' + os.path.basename(d), 'rb', buffering=0))
+            except OSError: pass
+    return fs
+
+
 fs = devs()
 while True:
-    r, _, _ = select.select(fs, [], [])
+    try: r = select.select(fs, [], [], 0.1)[0]   # 0.1 s: also polls the navbar command file
+    except InterruptedError: continue
+    nav()
+    if not r:
+        m = timeout_min()
+        if st['on'] and m > 0 and time.time() - st['last'] > m * 60: screen(False)
+        continue
     for f in r:
         ev = f.read(24)
         if len(ev) < 24: continue
         _, _, t, c, v = struct.unpack('qqHHi', ev)
+        if t == 1 and v == 1 and c == 116: screen(not st['on']); continue
+        if not st['on']:
+            if t == 1 and v == 1: sh('xset', 'dpms', 'force', 'off')  # touch woke X: keep it dark until POWER
+            continue
+        st['last'] = time.time()
         if t != 1 or v != 1: continue
-        if c == 116: screen(not screen_on)
-        elif not screen_on: continue
-        elif c == 115: bl(bl() + MAX // 10)
-        elif c == 114: bl(bl() - MAX // 10)
-        elif c in (172, 102): x('search', '--name', '^gta2-launcher$', 'windowactivate')
-        elif c == 158: x('key', 'Escape')
-        elif c == 254: kbd()
+        if c == 115: bl(bl() + MAX // 10)
+        elif c == 114: bl(max(5, bl() - MAX // 10))
+        elif c in (172, 102): home()
+        elif c == 158: back()
+        elif c == 254: keyboard()

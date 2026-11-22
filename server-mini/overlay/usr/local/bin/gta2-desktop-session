@@ -1,0 +1,26 @@
+#!/bin/sh
+# gta2srv desktop mode (USB-C dock: keyboard, mouse, Ethernet, storage): LXQt + Openbox, Breeze dark (KDE look).
+# Leaving LXQt (Leave > Logout, or "Tablet mode" in the menu) returns to the tablet home.
+F=$HOME/.config/gta2/desktop
+xset s off -dpms 2>/dev/null
+R=$(cat $F 2>/dev/null); case "$R" in left|right|normal) ;; *) R=left ;; esac
+sudo -n /usr/local/sbin/gta2-60hz
+xrandr --output DSI-1 --rotate $R 2>/dev/null
+sleep 0.3; sudo -n /usr/local/sbin/gta2-60hz      # a mode set brings back the 30 Hz divider
+# touch matrix = screen rotation x the panel's own touch orientation (/etc/gta2/rotation, "portrait-flip" on the
+# Tab Active2: the touch layer reports 180 degrees turned against the modesetting display)
+if [ "$(cat /etc/gta2/rotation 2>/dev/null)" = portrait-flip ]; then
+  case $R in left) M="0 1 0 -1 0 1 0 0 1" ;; right) M="0 -1 1 1 0 0 0 0 1" ;; *) M="-1 0 1 0 -1 1 0 0 1" ;; esac
+else
+  case $R in left) M="0 -1 1 1 0 0 0 0 1" ;; right) M="0 1 0 -1 0 1 0 0 1" ;; *) M="1 0 0 0 1 0 0 0 1" ;; esac
+fi
+xinput list --name-only 2>/dev/null | grep -iE 'touch|pen' | while read -r d; do
+  xinput set-prop "$d" "Coordinate Transformation Matrix" $M 2>/dev/null
+done
+xsetroot -solid '#1b1e20' -cursor_name left_ptr 2>/dev/null
+[ -d ~/.config/lxqt ] || cp -r /etc/skel-gta2-desktop/. ~/.config/   # first run: Breeze-dark LXQt defaults
+xdotool mouseup 1 2>/dev/null
+(while true; do python3 /usr/local/bin/gta2-keys; sleep 1; done) &
+startlxqt
+rm -f $F    # IceWM ended (logout or crash): next X start is tablet mode
+pkill -f bin/gta2-keys

@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>gta2</title>
+<style>
+/* gta2 home: Metro-style (flat tiles, panorama pages). Built for a weak GPU: one moving layer at a time,
+   no shadows / blur / gradients / rounded layers; animations only use transform + opacity. */
+:root{--bg:#000;--tx:#fff;--mut:#9a9a9a;--dim:#3a3a3a;--acc:#2d89ef;--ok:#1e7145;--warn:#e3a21a;--bad:#b91d47;
+--ease:cubic-bezier(.1,.9,.2,1);--mut:#a0a0a0;--pad:24px;--gap:10px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);overflow:hidden;
+ font:18px/1.3 "Segoe UI","Open Sans","Noto Sans","DejaVu Sans",sans-serif}
+input{-webkit-user-select:text;user-select:text}
+button{font:inherit;color:inherit}
+/* ---- panorama */
+#title{position:fixed;left:var(--pad);top:6px;font-size:96px;font-weight:300;letter-spacing:-4px;line-height:1;color:#fff;
+ opacity:.13;white-space:nowrap;pointer-events:none;will-change:transform;transition:transform .3s var(--ease)}
+#pivots{position:fixed;left:0;right:0;top:70px;height:64px;padding:0 var(--pad);display:flex;gap:26px;white-space:nowrap;z-index:2;
+ will-change:transform;transition:transform .26s var(--ease)}
+#pivots button{all:unset;cursor:pointer;font-size:48px;font-weight:300;letter-spacing:-1px;color:var(--dim);transition:color .2s}
+#pivots button.on{color:var(--tx)}
+#strip{position:fixed;left:0;top:140px;bottom:0;display:flex;will-change:transform;transition:transform .26s var(--ease)}
+#strip.drag{transition:none}
+.page{width:100vw;height:100%;overflow-y:auto;overflow-x:hidden;padding:6px var(--pad) 40px;touch-action:pan-y;-webkit-overflow-scrolling:touch}
+.page::-webkit-scrollbar{display:none}
+/* ---- tiles */
+.tiles{display:grid;gap:var(--gap);grid-template-columns:repeat(4,1fr)}
+@media (min-width:1000px){.tiles{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
+.t{position:relative;aspect-ratio:1;background:var(--c,var(--acc));padding:10px 12px;overflow:hidden;cursor:pointer;
+ transition:transform .12s ease-out;display:flex;flex-direction:column;justify-content:flex-end;border:0;text-align:left}
+.t.w{grid-column:span 2;aspect-ratio:auto}
+.t:active,.it:active,.b:active{transform:scale(.96)}
+.t .n{font-size:17px;line-height:1.1;position:absolute;left:12px;bottom:9px;right:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t .big{font-size:46px;font-weight:300;line-height:1;position:absolute;left:12px;top:10px;letter-spacing:-1px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.t .big small{font-size:18px;font-weight:400;letter-spacing:0;margin-left:3px}
+.t .sub{font-size:15px;opacity:.85;position:absolute;left:12px;top:62px;right:10px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t .ic{position:absolute;left:12px;top:12px;font-size:42px;line-height:1}
+.t .meter{position:absolute;left:0;bottom:0;height:4px;width:100%;background:rgba(255,255,255,.6);transform-origin:left;transform:scaleX(0);transition:transform .6s var(--ease)}
+.t svg{position:absolute;left:0;right:0;bottom:30px;width:100%;height:44%}
+h3{font-size:28px;font-weight:300;color:var(--mut);margin:22px 0 10px;text-transform:lowercase}
+/* ---- lists (settings, network, containers) */
+.it{display:block;width:100%;all:unset;box-sizing:border-box;width:100%;padding:12px 0;cursor:pointer;transition:transform .12s ease-out;transform-origin:left}
+.it b{display:block;font-size:36px;font-weight:300;letter-spacing:-.5px;line-height:1.1;text-transform:lowercase}
+.it span{display:block;font-size:16px;color:var(--mut);margin-top:2px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #1e1e1e;font-size:17px}
+.kv span:last-child{color:var(--mut);text-align:right;word-break:break-all}
+.b{all:unset;cursor:pointer;display:inline-block;padding:12px 20px;border:2px solid #fff;font-size:18px;margin:6px 8px 6px 0;transition:transform .12s ease-out}
+.b.p{background:var(--acc);border-color:var(--acc)}.b.d{border-color:var(--bad);color:#ff8a80}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:0}
+.note{color:var(--mut);font-size:17px;margin:6px 0 12px}
+input[type=text],input[type=password]{width:100%;background:#fff;color:#000;border:0;padding:11px 12px;font:inherit;font-size:17px;margin:6px 0;outline:3px solid transparent}
+input:focus{outline-color:var(--acc)}
+input[type=range]{width:100%;accent-color:var(--acc);height:34px}
+select{width:100%;background:#fff;color:#000;border:0;padding:10px;font:inherit;font-size:17px;margin:6px 0}
+.sw{display:flex;justify-content:space-between;align-items:center;padding:12px 0}
+.sw b{font-size:22px;font-weight:400}.sw span{display:block;font-size:15px;color:var(--mut)}
+.tg{all:unset;cursor:pointer;width:62px;height:28px;border:2px solid #fff;position:relative;flex:none}
+.tg::after{content:"";position:absolute;top:4px;left:4px;width:20px;height:20px;background:#fff;transition:transform .18s var(--ease)}
+.tg.on{background:var(--acc);border-color:var(--acc)}.tg.on::after{transform:translateX(34px)}
+/* ---- settings sub page (slides over, Metro turnstile-ish) */
+#sub{position:fixed;inset:0;background:#000;z-index:5;padding:20px var(--pad) 40px;overflow-y:auto;
+ transform:translate3d(100%,0,0);transition:transform .32s var(--ease);visibility:hidden}
+#sub.on{transform:none;visibility:visible}
+#sub .hd{font-size:15px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+#sub h1{font-size:54px;font-weight:300;letter-spacing:-2px;margin:2px 0 14px;text-transform:lowercase}
+#back{all:unset;cursor:pointer;width:46px;height:46px;border:2px solid #fff;border-radius:50%;display:grid;place-items:center;font-size:22px;margin-bottom:12px}
+#out{white-space:pre-wrap;font-family:"DejaVu Sans Mono",monospace;font-size:13px;color:var(--mut);margin-top:10px}
+.wl .it b{font-size:22px}.wl .it span{font-size:13px}
+.toast{position:fixed;left:0;right:0;top:0;padding:12px var(--pad);background:var(--acc);font-size:16px;z-index:9;transform:translate3d(0,-100%,0);transition:transform .25s var(--ease)}
+.toast.on{transform:none}
+.lonly{display:none}body.local .lonly{display:block}body.local .ronly{display:none}
+</style></head><body>
+<div id="title">gta2srv</div>
+<nav id="pivots"><button class="on">home</button><button>apps</button><button>screen</button><button>settings</button></nav>
+<div id="strip">
+<section class="page" id="p-home">
+ <div class="tiles" id="g-main"></div>
+ <h3>network</h3><div id="netlist"></div>
+ <h3>latency · 3 h</h3><div class="tiles"><div class="t w" style="--c:#1d1d1d;aspect-ratio:4/1;grid-column:1/-1" id="latch"><svg viewBox="0 0 300 60" preserveAspectRatio="none" style="bottom:8px;height:80%"><polyline fill="none" stroke="#e3a21a" stroke-width="2" points=""/></svg></div></div>
+</section>
+<section class="page" id="p-apps">
+ <div class="tiles" id="g-apps"></div>
+ <h3>containers</h3><div id="ctr"></div>
+</section>
+<section class="page" id="p-screen">
+ <div class="ronly note">Second-screen apps start on the tablet. Use this page on the tablet itself.</div>
+ <div class="lonly">
+  <h3 style="margin-top:4px">vnc</h3><div class="note">Connect to a VNC server on your PC (TightVNC, TigerVNC, RealVNC…).</div>
+  <input type="text" id="vnc" placeholder="192.168.1.x:5900"><div class="row"><button class="b p" onclick="vncGo()">connect</button></div>
+  <h3>moonlight</h3><div class="note">Stream your PC from Sunshine or NVIDIA GameStream. No hardware decoding here: pick 720p, 30–60 fps.</div>
+  <div class="row"><button class="b p" onclick="go('moonlight')">open moonlight</button></div>
+  <h3>extend windows (spacedesk replacement)</h3><div class=note>spacedesk discontinued its browser viewer, so it cannot run on Linux. Same result, smoother:
+  on the PC install <b>Sunshine</b> and a free virtual display driver (e.g. "Virtual Display Driver" by VirtualDrivers on GitHub). Windows then has a real extra monitor. In Sunshine pick that monitor; on the tablet open Moonlight and choose "Desktop".</div>
+  <div class="row"><button class="b p" onclick="go('moonlight')">open moonlight</button></div>
+ </div>
+</section>
+<section class="page" id="p-settings">
+ <div class="ronly note">Settings work on the tablet's own screen. From here you can see the status below.</div>
+ <div id="setlist" class="lonly"></div>
+ <h3>about</h3><div id="about"></div>
+</section>
+</div>
+<div id="sub"><button id="back" onclick="closeSub()">←</button><div class="hd">settings</div><h1 id="subt"></h1><div id="subb"></div><div id="out"></div></div>
+<div class="toast" id="toast"></div>
+<script>
+const $=id=>document.getElementById(id),H=location.hostname,LOCAL=(H==='127.0.0.1'||H==='localhost');
+if(LOCAL)document.body.classList.add('local');
+const f=(x,d=0)=>x==null||isNaN(x)?'–':Number(x).toLocaleString(undefined,{maximumFractionDigits:d});
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dur=s=>{if(s==null)return'–';const d=s/86400|0,h=s%86400/3600|0,m=s%3600/60|0;return d?d+'d '+h+'h':h?h+'h '+m+'m':m+'m'};
+const gb=b=>b==null?'–':b>=1e12?(b/1e12).toFixed(2)+' TB':b>=1e9?(b/1e9).toFixed(1)+' GB':(b/1e6).toFixed(0)+' MB';
+const ago=t=>{const s=Date.now()/1000-t;return s<90?Math.round(s)+' s ago':s<5400?Math.round(s/60)+' min ago':Math.round(s/3600)+' h ago'};
+function toast(t){const e=$('toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('on'),2200)}
+
+/* ---------- panorama: tap a pivot or swipe sideways. Only #strip, #pivots and #title move (3 layers). */
+const PN=['home','apps','screen','settings'],pidx=h=>Math.max(0,PN.findIndex(p=>h.startsWith(p)));
+const pages=[...document.querySelectorAll('.page')],piv=[...document.querySelectorAll('#pivots button')];let cur=0;
+let busyUntil=0;const busy=()=>performance.now()<busyUntil||document.querySelector('#strip.drag');
+function html(id,h){const e=$(id);if(e._h!==h){e.innerHTML=h;e._h=h}}
+function show(i,instant){busyUntil=performance.now()+400;cur=Math.max(0,Math.min(pages.length-1,i));const W=innerWidth;
+ const s=$('strip');if(instant)s.classList.add('drag');s.style.transform=`translate3d(${-cur*W}px,0,0)`;
+ $('title').style.transform=`translate3d(${-cur*W*0.18}px,0,0)`;
+ let off=0;for(let k=0;k<cur;k++)off+=piv[k].offsetWidth+26;$('pivots').style.transform=`translate3d(${-off}px,0,0)`;
+ piv.forEach((b,k)=>b.classList.toggle('on',k===cur));history.replaceState(history.state,'','#'+PN[cur]);
+ if(instant)requestAnimationFrame(()=>s.classList.remove('drag'))}
+piv.forEach((b,i)=>b.onclick=()=>show(i));
+addEventListener('resize',()=>show(cur,1));
+show(pidx(location.hash.slice(1)),1);
+// swipe: follow the finger horizontally; vertical drags scroll the page (also for mouse-emulated touch)
+(()=>{let x0,y0,mode=0,pg,st,moved=false;const s=$('strip');
+ addEventListener('pointerdown',e=>{if($('sub').classList.contains('on')||e.target.closest('input,select,.tg,input[type=range]'))return;x0=e.clientX;y0=e.clientY;mode=1;moved=false;pg=pages[cur];st=pg.scrollTop},{passive:true});
+ addEventListener('pointermove',e=>{if(!mode)return;const dx=e.clientX-x0,dy=e.clientY-y0;
+  if(mode===1&&Math.abs(dx)>14&&Math.abs(dx)>Math.abs(dy)){mode=2;s.classList.add('drag')}
+  else if(mode===1&&Math.abs(dy)>10&&e.pointerType!=='touch')mode=3;
+  if(mode===2){moved=true;let d=dx;if((cur===0&&d>0)||(cur===pages.length-1&&d<0))d/=3;s.style.transform=`translate3d(${-cur*innerWidth+d}px,0,0)`}
+  else if(mode===3){moved=true;pg.scrollTop=st-dy}},{passive:true});
+ const end=e=>{if(mode===2){s.classList.remove('drag');const dx=e.clientX-x0;show(cur+(dx<-60?1:dx>60?-1:0))}mode=0};
+ addEventListener('pointerup',end);addEventListener('pointercancel',end);
+ addEventListener('click',e=>{if(moved){e.stopPropagation();e.preventDefault();moved=false}},true)})();
+
+/* ---------- tiles: built once, then only text changes */
+const T={};
+function tile(grid,id,c,w){if(T[id])return T[id];const e=document.createElement('div');e.className='t'+(w?' w':'');e.style.setProperty('--c',c);
+ e.innerHTML='<div class=big></div><div class=sub></div><div class=n></div><div class=meter hidden></div>';$(grid).appendChild(e);return T[id]=e}
+function set(id,big,sub,name,pct,c){const e=T[id];if(!e)return;const[B,S,N,M]=e.children;if(c)e.style.setProperty('--c',c);
+ if(B._v!==big)B.innerHTML=B._v=big;if(S._v!==sub)S.innerHTML=S._v=sub||'';if(N._v!==name)N.textContent=N._v=name;
+ if(pct!=null){M.hidden=false;M.style.transform='scaleX('+Math.max(0,Math.min(100,pct))/100+')'}}
+const MAIN=[['net','#2d89ef',1],['lat','#1e7145'],['sp','#2b5797'],['dev','#603cba'],['ph','#9f00a7'],['phq','#7e3878'],
+ ['cpu','#da532c'],['mem','#603cba'],['bat','#00aba9'],['disk','#2b5797'],['wifi','#2d89ef',1],['today','#e3a21a'],['up','#1d1d1d']];
+MAIN.forEach(([id,c,w])=>tile('g-main',id,c,w));
+T.net.onclick=()=>show(0)||0;T.sp.onclick=()=>fetch('/speedtest',{method:'POST'}).then(()=>toast('speed test started… result in about a minute'));
+const lvl=(v,a,b)=>v==null?'#555':v<a?'#1e7145':v<b?'#e3a21a':'#b91d47';
+function clock(){const n=new Date();set('up',n.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),n.toLocaleDateString([],{weekday:'long'})+'<br>'+n.toLocaleDateString([],{day:'numeric',month:'long'}),'',null)}
+function liveTiles(d){const n=d.net||{},L=n.lat||{},r=d.router||{};
+ if(r.ok)set('net',`${f(r.rx_mbit,1)}<small>Mbit/s ↓</small>`,`↑ ${f(r.tx_mbit,1)} Mbit/s · whole home`,n.online?'internet · online':'internet · OFFLINE',null,n.online?'#2d89ef':'#b91d47');
+ else if(n.rate)set('net',`${f(n.rate.rx,1)}<small>Mbit/s ↓</small>`,`↑ ${f(n.rate.tx,1)} Mbit/s · tablet`,n.online?'internet · online':'internet · OFFLINE',null,n.online?'#2d89ef':'#b91d47');
+ set('lat',`${f(L['1.1.1.1'])}<small>ms</small>`,`router ${f(L.router)} ms<br>8.8.8.8 ${f(L['8.8.8.8'])} ms`,'latency',null,lvl(L['1.1.1.1'],30,80))}
+async function live(){if(busy())return;try{liveTiles(await (await fetch('/live',{cache:'no-store'})).json())}catch(e){}}
+async function load(){if(busy())return setTimeout(load,500);let d;try{d=await (await fetch('/api',{cache:'no-store'})).json()}catch(e){set('net','–','tablet unreachable','offline',null,'#b91d47');return}
+ liveTiles(d);const n=d.net||{},r=d.router||{},sp=(n.speed||[]).filter(x=>x.down!=null),last=sp[sp.length-1],p=d.pihole,m=d.mem||[0,1],b=d.battery,ni=d.netinfo||{};
+ set('sp',last?`${f(last.down)}<small>↓</small>`:'–',last?`↑ ${f(last.up)} Mbit/s<br>${ago(last.t)}`:'every 15 min<br>on Ethernet','speed test · tap');
+ set('dev',r.ok?f(r.clients):'–',r.ok?'router up '+dur(r.uptime):'no router data','devices');
+ if(p){set('ph',`${f(p.percent,1)}<small>%</small>`,`${f(p.blocked)} blocked`,'pi-hole',p.percent);set('phq',f(p.total),`${f(p.clients)} clients`,'dns queries')}
+ set('cpu',`${f(d.cpu_pct)}<small>%</small>`,`${f(d.temp)} °C · ${(d.cpu_mhz||[]).map(x=>(x/1000).toFixed(1)).join('/')} GHz`,'cpu',d.cpu_pct,d.temp>=78?'#b91d47':'#da532c');
+ set('mem',`${f(m[0]/1024,1)}<small>GB</small>`,`of ${f(m[1]/1024,1)} GB`,'memory',100*m[0]/m[1]);
+ if(b)set('bat',`${b.pct}<small>%</small>`,b.plugged?'plugged in<br>'+b.status.toLowerCase():b.status.toLowerCase(),'battery',b.pct,b.pct>20?'#00aba9':'#b91d47');
+ const dk=d.disks||[],big=dk.find(x=>x.name==='Share drive')||dk.find(x=>x.name==='Data')||dk[0];
+ if(big)set('disk',`${f(big.total-big.used,0)}<small>GB free</small>`,dk.map(x=>`${x.name.toLowerCase()} ${f(x.total-x.used,0)}/${f(x.total,0)}`).join('<br>'),'storage',100*big.used/big.total);
+ const w=ni.wifi,eth=(ni.ifs||[]).find(i=>i.kind==='ethernet'&&i.ip),main=eth||(ni.ifs||[]).find(i=>i.ip);
+ set('wifi',eth?`${eth.speed?f(eth.speed>=1000?eth.speed/1000:eth.speed)+'<small>'+(eth.speed>=1000?'Gbit':'Mbit')+' ethernet</small>':'<small>ethernet</small>'}`:w?`${w.signal}<small>% wi-fi</small>`:'<small>no network</small>',
+  (main?esc(main.ip.split('/')[0])+' · ':'')+(w?esc(w.ssid)+' '+w.signal+'%':'wi-fi off')+'<br>gateway '+esc(ni.gw||'–'),'network');
+ if(r.ok&&(r.today_bytes!=null||r.month_rx!=null))set('today',r.today_bytes!=null?gb(r.today_bytes).replace(' ','<small>')+'</small>':gb((r.month_rx||0)+(r.month_tx||0)).replace(' ','<small>')+'</small>',r.line_down?`line ${f(r.line_down/1000,0)}/${f(r.line_up/1000,0)} Mbit`:'','data '+(r.today_bytes!=null?'today':'this month'));
+ else T.today.hidden=true;
+ clock();
+ html('netlist',(ni.ifs||[]).map(i=>`<div class=kv><span>${esc(i.name)} · ${i.kind}${i.speed?' · '+i.speed+' Mbit':''}</span><span>${esc(i.ip||'no address')} · ↓${gb(i.rx)} ↑${gb(i.tx)}</span></div>`).join('')+
+  (w?`<div class=kv><span>wi-fi</span><span>${esc(w.ssid)} · ${w.signal}% · ${esc(w.freq)} · ${esc(w.rate)}</span></div>`:'')+
+  `<div class=kv><span>gateway</span><span>${esc(ni.gw||'–')}</span></div>`+(r.ok?`<div class=kv><span>router</span><span>WAN ${r.wan_up===false?'down':'up'} · up ${dur(r.uptime)}${r.fw?' · fw '+esc(r.fw):''}</span></div>`:'')+
+  `<div class=kv><span>dashboard</span><span>http://${esc((main&&main.ip||'').split('/')[0]||H)}:8088</span></div>`);
+ const h=(n.hist||[]).map(x=>x[1]).filter(x=>x!=null);if(h.length>1){const mx=Math.max(...h,1);
+  $('latch').querySelector('polyline').setAttribute('points',h.map((v,i)=>(i*300/(h.length-1)).toFixed(1)+','+(58-54*v/mx).toFixed(1)).join(' '))}
+ html('ctr',(d.containers||[]).map(c=>`<div class=kv><span>${esc(c.name)}</span><span>${esc(c.status)}</span></div>`).join('')||'<div class=note>no containers running</div>');
+ html('about',`<div class=kv><span>name</span><span>${esc(d.host)}</span></div><div class=kv><span>kernel</span><span>${esc(d.kernel||'')}</span></div><div class=kv><span>uptime</span><span>${dur(d.uptime)}</span></div><div class=kv><span>load</span><span>${(d.load||[]).join(' ')}</span></div>`)}
+load();setInterval(load,10000);setInterval(live,2000);setInterval(clock,15000);
+
+/* ---------- apps */
+const base=LOCAL?'http://127.0.0.1':'http://'+H;
+const APPS=[['files','#1e7145','▤',base+'/#/files'],['app store','#2d89ef','⇣',base+'/#/'],['casaos','#2b5797','⌂',base+'/'],
+ ['pi-hole','#9f00a7','⛨',base+':8083/admin/'],['portainer','#00aba9','▣',base+':9000/'],['terminal','#1d1d1d','›_',null,'terminal'],
+ ['keyboard','#555','⌨',null,'keyboard'],['classic panel','#7e3878','☰',base+':8090/']];
+APPS.forEach(([n,c,ic,url,act])=>{const e=document.createElement('button');e.className='t';e.style.setProperty('--c',c);
+ e.innerHTML=`<div class=ic>${ic}</div><div class=n>${n}</div>`;e.onclick=()=>act?go(act):location.href=url;
+ if(act&&!LOCAL)e.hidden=true;$('g-apps').appendChild(e)});
+
+/* ---------- tablet controls (only answered for 127.0.0.1) */
+async function call(a,v){const r=await fetch('/ctl',{method:'POST',body:JSON.stringify({a,v})});if(!r.ok)throw 0;return r.json()}
+async function go(a,v){if(!LOCAL)return;try{await call(a,v);toast('starting '+a+'…')}catch(e){toast('failed')}}
+function vncGo(){const v=$('vnc').value.trim();if(!v)return toast('enter the PC address first');try{localStorage.vnc=v}catch(e){}go('vnc',v)}
+try{$('vnc').value=localStorage.vnc||''}catch(e){}
+
+/* ---------- settings: list -> sub page */
+let ST={};const out=t=>{$('out').textContent=t||''};
+async function sys(...a){out('working…');try{const r=await call('sys',a);out(r.out);toast(r.out.split('\n')[0]||'done');return r.out}catch(e){out('failed');toast('failed')}}
+const tg=(on,fn)=>{const b=document.createElement('button');b.className='tg'+(on?' on':'');b.onclick=()=>{b.classList.toggle('on');fn(b.classList.contains('on'))};return b};
+function sw(el,title,sub,on,fn){const d=document.createElement('div');d.className='sw';d.innerHTML=`<div><b>${title}</b><span>${sub||''}</span></div>`;d.appendChild(tg(on,fn));el.appendChild(d)}
+const SETS=[
+['wi-fi','networks, connect, forget',async b=>{sw(b,'Wi-Fi','',ST.wifi_on,v=>call('wifi_radio',v?'on':'off').then(r=>toast(r.out||'ok')));
+ b.insertAdjacentHTML('beforeend','<div class=row><button class="b p" id=scan>scan</button></div><div class=wl id=wl><div class=note>tap scan</div></div><div id=wc></div>');
+ $('scan').onclick=async()=>{$('wl').innerHTML='<div class=note>scanning…</div>';const r=await call('wifi_scan');
+  $('wl').innerHTML=r.list.map((w,i)=>`<button class=it data-i=${i}><b>${esc(w.ssid)}</b><span>${w.on?'connected · ':w.saved?'saved · ':''}${w.signal}% · ${esc(w.sec||'open')}</span></button>`).join('')||'<div class=note>nothing found</div>';
+  $('wl').querySelectorAll('.it').forEach(e=>e.onclick=()=>{const w=r.list[+e.dataset.i];
+   $('wc').innerHTML=`<h3>${esc(w.ssid)}</h3>${w.sec&&!w.saved?'<input type=password id=wpw placeholder="password">':''}<div class=row><button class="b p" id=wgo>connect</button>${w.saved?'<button class="b d" id=wfg>forget</button>':''}</div>`;
+   $('wgo').onclick=async()=>{out('connecting…');const x=await call('wifi_connect',{ssid:w.ssid,pw:($('wpw')||{}).value||''});out(x.out);toast(x.out.includes('success')?'connected':'see message')};
+   if($('wfg'))$('wfg').onclick=async()=>{const x=await call('wifi_forget',w.ssid);out(x.out)}})};$('scan').click()}],
+['hotspot & tether','share the connection',b=>{const h=ST.hotspot||{};
+ b.innerHTML=`<div class=note>The tablet becomes a Wi-Fi access point (its own Wi-Fi client is off meanwhile).</div><input type=text id=hs value="${esc(ST.host)}-ap"><input type=password id=hp placeholder="password, 8+ characters">
+ <div class=row><button class="b p" onclick="sys('hotspot','on',$('hs').value,$('hp').value)">start hotspot</button><button class=b onclick="sys('hotspot','off')">stop</button></div><div class=note>now: hotspot ${h.hotspot||'?'}</div>`;
+ sw(b,'USB tether','a laptop on the USB cable gets internet',h.tether==='on',v=>sys('hotspot',v?'tether-on':'tether-off'))}],
+['vpn','tailscale, wireguard',b=>{b.innerHTML=`<div class=note>${esc(ST.vpn)}</div><h3>tailscale</h3><div class=note>"sign in" shows a link: open it on your phone.</div>
+ <div class=row><button class=b onclick="sys('vpn','ts-install')">install</button><button class="b p" onclick="sys('vpn','ts-up')">sign in / up</button><button class=b onclick="sys('vpn','ts-down')">down</button></div>
+ <h3>wireguard</h3><div class=note>put wg0.conf in the Files share, then tap up.</div><div class=row><button class=b onclick="sys('vpn','wg-install')">install</button><button class="b p" onclick="sys('vpn','wg-up')">up</button><button class=b onclick="sys('vpn','wg-down')">down</button></div>`}],
+['bluetooth','devices, pairing',b=>{sw(b,'Bluetooth','',ST.bt.on,v=>sys('bt','power',v?'on':'off'));
+ b.insertAdjacentHTML('beforeend',`<div class=note style="white-space:pre-wrap">${esc(ST.bt.text)}</div><div class=row><button class="b p" id=bscan>scan 10 s</button></div><div id=bl></div>`);
+ $('bscan').onclick=async()=>{$('bl').innerHTML='<div class=note>scanning…</div>';const o=await sys('bt','scan')||'';
+  $('bl').innerHTML=o.split('\n').filter(l=>l.startsWith('Device ')).map(l=>{const m=l.split(' ')[1];return `<button class=it onclick="sys('bt','pair','${esc(m)}')"><b>${esc(l.slice(25)||m)}</b><span>${esc(m)} · tap to pair</span></button>`}).join('')}}],
+['display','brightness, screen timeout',b=>{b.innerHTML=`<h3>brightness</h3><input type=range id=br min=5 max=255><h3>turn the screen off after</h3><select id=sto>${[0,1,2,5,10,15,30,60].map(m=>`<option value=${m}>${m?m+' min':'never'}</option>`).join('')}</select>
+ <div class=row><button class=b onclick="go('screenoff')">screen off now</button><button class=b onclick="go('keyboard')">keyboard</button></div><div class=note>POWER: screen off/on · VOL: brightness · HOME: this screen · BACK: back · RECENTS: keyboard</div>`;
+ call('info').then(i=>{$('br').max=i.max;$('br').value=i.bright});let t;$('br').oninput=e=>{clearTimeout(t);t=setTimeout(()=>call('bright',+e.target.value),80)};
+ $('sto').value=ST.ui.screen_off;$('sto').onchange=e=>call('ui',+e.target.value).then(()=>toast('saved'))}],
+['battery','charge limit for 24/7 use',b=>{b.innerHTML=`<div class=note style="white-space:pre-wrap">${esc(ST.battery)}</div><h3>stop charging at <span id=clv>${ST.charge_limit}</span>%</h3>
+ <input type=range id=cl min=50 max=100 step=5 value=${ST.charge_limit}><div class=note>resumes 5% below. 80% is kind to a battery that is always plugged in.</div>`;
+ let t;$('cl').oninput=e=>{$('clv').textContent=e.target.value;clearTimeout(t);t=setTimeout(()=>sys('battery','limit',e.target.value),900)}}],
+['performance','cpu governor, max clock, throttling',b=>{const c=ST.cpu||{};b.innerHTML=`<div class=note>now: ${esc(c.gov)} · max ${f(c.max/1000)} MHz · throttle at ${esc(c.trip)} °C</div>
+ <h3>governor</h3><select id=gv>${['ondemand','schedutil','performance','powersave'].map(g=>`<option>${g}</option>`).join('')}</select>
+ <h3>max clock</h3><select id=mx>${[1794000,1690000,1586000,1482000,1248000].map(m=>`<option value=${m}>${m/1000} MHz</option>`).join('')}</select>
+ <h3>throttle at</h3><select id=tr>${[70,75,80,85,90,95].map(m=>`<option>${m}</option>`).join('')}</select>`;
+ $('gv').value=c.gov;$('mx').value=c.cap;$('tr').value=c.trip;$('gv').onchange=e=>sys('cpu','gov',e.target.value);$('mx').onchange=e=>sys('cpu','max',e.target.value);$('tr').onchange=e=>sys('cpu','trip',e.target.value)}],
+['file sharing','SMB / SFTP for the NAS share',b=>{const s=ST.share||{};b.innerHTML=`<div class=note>Windows: \\\\${esc(ST.host)}\\share · Mac/Linux: smb://${esc(ST.host)}/share or sftp://gta2@${esc(H)}</div>`;
+ sw(b,'Windows sharing (SMB)','',s.smb==='on'||s.smb==='active',v=>call('share',['smb',v?'on':'off']).then(r=>toast(r.out||'ok')));
+ sw(b,'Guest access','no password on the LAN',s.guest==='on',v=>call('share',['guest',v?'on':'off']).then(r=>toast(r.out||'ok')));
+ b.insertAdjacentHTML('beforeend',`<h3>smb password</h3><input type=password id=spw placeholder="new password"><div class=row><button class="b p" onclick="call('share',['passwd',$('spw').value]).then(r=>{toast(r.out||'set');$('spw').value=''})">set</button></div><div class=note style="white-space:pre-wrap">${esc(Object.entries(s).map(e=>e.join(': ')).join('\n'))}</div>`)}],
+['remote access','ssh',b=>{const s=ST.ssh||{};b.innerHTML=`<div class=note>ssh ${esc(s.ssh)} · ${esc(s.keys)} keys · ssh gta2@${esc(H)}</div>`;
+ sw(b,'Password login','keys always work',s.password==='on',v=>sys('ssh','password',v?'on':'off'));
+ b.insertAdjacentHTML('beforeend',`<div class=note>Put a public key into the Files share as authorized_keys.txt, then:</div><div class=row><button class=b onclick="sys('ssh','addkey')">add key</button></div>`)}],
+['date & time','time zone, network time',async b=>{const t=ST.time||{};b.innerHTML=`<div class=note>${esc(t.now)} · ${esc(t.tz)}</div><select id=tz><option>${esc(t.tz)}</option></select>`;
+ sw(b,'Network time','',t.ntp==='yes',v=>sys('time','ntp',v?'true':'false'));
+ const z=(await call('sys',['time','zones'])).out.split('\n').filter(x=>x.includes('/')||x==='UTC');$('tz').innerHTML=z.map(x=>`<option>${esc(x)}</option>`).join('');$('tz').value=t.tz;$('tz').onchange=e=>sys('time','tz',e.target.value)}],
+['device','name, login password',b=>{b.innerHTML=`<h3>name</h3><input type=text id=hn value="${esc(ST.host)}"><div class=row><button class="b p" onclick="sys('device','hostname',$('hn').value.trim())">rename</button></div>
+ <h3>login password (gta2)</h3><input type=password id=p1 placeholder="new password"><input type=password id=p2 placeholder="again"><div class=row><button class="b p" onclick="$('p1').value===$('p2').value?sys('device','passwd',$('p1').value):toast('passwords differ')">change</button></div>`}],
+['updates','ubuntu packages, free space',b=>{b.innerHTML=`<div class=note style="white-space:pre-wrap">${esc(ST.space)}</div><div class=row><button class=b onclick="sys('update','check')">check</button><button class="b p" onclick="confirm('Install updates now? Keep the tablet plugged in.')&&sys('update','run')">install</button><button class=b onclick="sys('update','clean')">clean up</button></div>`}],
+['interface','classic launcher, restart',b=>{b.innerHTML='<div class=note>This Metro home is the default. The old Tk launcher is still there if you need it.</div>';
+ sw(b,'Classic launcher','old Tk home screen instead of this one',false,v=>v&&confirm('Switch to the classic launcher? (Settings there can switch back.)')&&go('classic','on'));
+ b.insertAdjacentHTML('beforeend','<div class=row><button class=b onclick="go(\'restart-ui\')">restart interface</button></div>')}],
+['power','restart, shut down',b=>{b.innerHTML=`<div class=row><button class="b d" onclick="confirm('Restart the tablet?')&&go('reboot')">restart</button><button class="b d" onclick="confirm('Shut down? You need the power key to start it again.')&&go('poweroff')">shut down</button></div>`}]];
+$('setlist').innerHTML=SETS.map((s,i)=>`<button class=it data-i=${i}><b>${s[0]}</b><span>${s[1]}</span></button>`).join('');
+$('setlist').querySelectorAll('.it').forEach(e=>e.onclick=async()=>{const s=SETS[+e.dataset.i];$('subt').textContent=s[0];$('subb').innerHTML='<div class=note>loading…</div>';out('');
+ $('sub').classList.add('on');$('sub').scrollTop=0;history.pushState({sub:1},'');try{ST=await call('status')}catch(x){}$('subb').innerHTML='';s[2]($('subb'))});
+function closeSub(){if(!$('sub').classList.contains('on'))return;$('sub').classList.remove('on');if(history.state&&history.state.sub)history.back()}
+addEventListener('keydown',e=>{if(e.key==='Escape'||e.key==='BrowserBack')closeSub()});
+// HOME key (gta2-keys) loads "/#home" again: reset to the first page
+addEventListener('hashchange',()=>{closeSub();show(pidx(location.hash.slice(1)))});
+addEventListener('popstate',()=>closeSub());
+// FPSPROBE: ?fps -> frame stats in the window title (for tuning on the tablet)
+if(location.search.includes('fps')){let fr=[],l=0;const L=t=>{if(l)fr.push(t-l);l=t;requestAnimationFrame(L)};requestAnimationFrame(L);
+setInterval(()=>{if(!fr.length)return;const a=fr.reduce((x,y)=>x+y)/fr.length;document.title='FPS '+(1000/a).toFixed(0)+' worst '+Math.max(...fr).toFixed(0)+' jank '+fr.filter(x=>x>25).length;fr=[]},1000)}
+</script></body></html>

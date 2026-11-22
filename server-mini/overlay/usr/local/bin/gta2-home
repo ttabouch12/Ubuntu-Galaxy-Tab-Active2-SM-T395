@@ -1,0 +1,8 @@
+#!/bin/sh
+# gta2-home: native Qt Quick Metro home screen (60 fps on the Mali T830). Data/actions: gta2-dash on :8088.
+#   gta2-home [fps]   fps: log frames/s while moving to /tmp/gta2-fps.log (via /ctl fpslog)
+export QT_QPA_PLATFORM=xcb QT_XCB_GL_INTEGRATION=xcb_egl   # GLX is very slow here; EGL is not
+export QML_XHR_ALLOW_FILE_READ=1                          # HOME key signal: /tmp/gta2-home.cmd
+export QSG_RENDER_LOOP=${QSG_RENDER_LOOP:-threaded} QT_QUICK_CONTROLS_STYLE=Basic
+[ -f /tmp/gta2-home.cmd ] || echo start > /tmp/gta2-home.cmd
+exec /usr/lib/qt6/bin/qml /usr/share/gta2/home-qml/Main.qml -- "$@"

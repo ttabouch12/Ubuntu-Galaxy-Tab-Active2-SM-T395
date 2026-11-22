@@ -1,0 +1,111 @@
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 4948d734e..3fcec0876 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -1215,6 +1215,10 @@ static void s5p_mfc_unconfigure_2port_memory(struct s5p_mfc_dev *mfc_dev)
+ 	vb2_dma_contig_clear_max_seg_size(mfc_dev->mem_dev[BANK_R_CTX]);
+ }
+ 
++/* Exynos7870: IOVA hole fillers below the firmware block (see below) */
++#define MFC_IOVA_FILL_MAX	16
++static struct { void *cpu; dma_addr_t dma; size_t size; } mfc_iova_fill[MFC_IOVA_FILL_MAX];
++
+ static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
+ {
+ 	struct device *dev = &mfc_dev->plat_dev->dev;
+@@ -1230,8 +1234,39 @@ static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
+ 	if (!mfc_dev->mem_bitmap)
+ 		return -ENOMEM;
+ 
++	/*
++	 * Exynos7870 (MFC 7J, v10): the firmware only accepts buffers placed
++	 * ABOVE its base address (SEQ_HEADER fails with error 0x37 otherwise).
++	 * arm64 iommu-dma hands out IOVAs top-down and continues below the last
++	 * allocation, so: put the firmware/context block at the bottom of the
++	 * IOVA space (8 MiB aligned -> 0x800000), fill the small hole below it,
++	 * and every later allocation wraps around to the top, above the base.
++	 */
++	if (exynos_is_iommu_available(dev) &&
++	    mfc_dev->variant->version == MFC_VERSION_V10)
++		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(ilog2(mem_size) + 1));
++
+ 	mfc_dev->mem_virt = dma_alloc_coherent(dev, mem_size,
+ 					       &mfc_dev->mem_base, GFP_KERNEL);
++
++	if (mfc_dev->mem_virt && exynos_is_iommu_available(dev) &&
++	    mfc_dev->variant->version == MFC_VERSION_V10) {
++		size_t sz;
++		int n = 0;
++
++		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(ilog2(mem_size)));
++		for (sz = mem_size / 2; sz >= PAGE_SIZE && n < MFC_IOVA_FILL_MAX; sz /= 2) {
++			mfc_iova_fill[n].cpu = dma_alloc_attrs(dev, sz, &mfc_iova_fill[n].dma,
++					GFP_KERNEL, DMA_ATTR_NO_KERNEL_MAPPING);
++			if (!mfc_iova_fill[n].cpu)
++				break;
++			mfc_iova_fill[n++].size = sz;
++		}
++		/* and keep every buffer within 256 MiB of the firmware base */
++		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(28));
++		dev_info(dev, "firmware base %pad, %d IOVA fillers below it\n",
++			 &mfc_dev->mem_base, n);
++	}
+ 	if (!mfc_dev->mem_virt) {
+ 		bitmap_free(mfc_dev->mem_bitmap);
+ 		dev_err(dev, "failed to preallocate %ld MiB for the firmware and context buffers\n",
+@@ -1270,8 +1305,16 @@ static void s5p_mfc_unconfigure_common_memory(struct s5p_mfc_dev *mfc_dev)
+ {
+ 	struct device *dev = &mfc_dev->plat_dev->dev;
+ 
++	int i;
++
+ 	dma_free_coherent(dev, mfc_dev->mem_size, mfc_dev->mem_virt,
+ 			  mfc_dev->mem_base);
++	for (i = 0; i < MFC_IOVA_FILL_MAX; i++)
++		if (mfc_iova_fill[i].cpu) {
++			dma_free_attrs(dev, mfc_iova_fill[i].size, mfc_iova_fill[i].cpu,
++				       mfc_iova_fill[i].dma, DMA_ATTR_NO_KERNEL_MAPPING);
++			mfc_iova_fill[i].cpu = NULL;
++		}
+ 	bitmap_free(mfc_dev->mem_bitmap);
+ 	vb2_dma_contig_clear_max_seg_size(dev);
+ }
+@@ -1678,6 +1721,8 @@ static const struct s5p_mfc_variant mfc_drvdata_v10 = {
+ 	.port_num       = MFC_NUM_PORTS_V10,
+ 	.buf_size       = &buf_size_v10,
+ 	.fw_name[0]     = "s5p-mfc-v10.fw",
++	.clk_names      = {"mfc"},
++	.num_clocks     = 1,
+ };
+ 
+ static struct s5p_mfc_buf_size_v6 mfc_buf_size_v12 = {
+diff --git a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+index 98f8292b3..0bfa527e4 100644
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+@@ -596,7 +596,11 @@ static int s5p_mfc_set_dec_stream_buffer_v6(struct s5p_mfc_ctx *ctx,
+ 		ctx->inst_no, buf_addr, strm_size, strm_size);
+ 	writel(strm_size, mfc_regs->d_stream_data_size);
+ 	writel(buf_addr, mfc_regs->d_cpb_buffer_addr);
+-	writel(buf_size->cpb, mfc_regs->d_cpb_buffer_size);
++	if (dev->variant->version == MFC_VERSION_V10 && ctx->dec_src_buf_size)
++		/* Exynos7870 (MFC 7J): firmware wants the real CPB buffer size */
++		writel(ALIGN(ctx->dec_src_buf_size, 512), mfc_regs->d_cpb_buffer_size);
++	else
++		writel(buf_size->cpb, mfc_regs->d_cpb_buffer_size);
+ 	writel(start_num_byte, mfc_regs->d_cpb_buffer_offset);
+ 
+ 	mfc_debug_leave();
+@@ -1771,6 +1775,12 @@ static int s5p_mfc_init_decode_v6(struct s5p_mfc_ctx *ctx)
+ 		writel(ctx->display_delay, mfc_regs->d_display_delay);
+ 	}
+ 
++	if (dev->variant->version == MFC_VERSION_V10) {
++		/* Exynos7870 (MFC 7J) firmware: special parsing + conceal control, as Samsung's driver */
++		reg |= (0x1 << 15) | (0x4 << 8);
++		writel(0x8020000, dev->regs_base + 0xf0c8); /* D_FORCE_PIXEL_VAL: conceal colour */
++	}
++
+ 	if (IS_MFCV7_PLUS(dev) || IS_MFCV6_V2(dev)) {
+ 		writel(reg, mfc_regs->d_dec_options);
+ 		reg = 0;

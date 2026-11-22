@@ -1,0 +1,6 @@
+#!/bin/sh
+# Run a Pi-Apps command (gui, install, manage ...) so it detects arm64.
+# Pi-Apps reads the ELF header of "readlink -f /sbin/init"; on gta2srv that is the shell script gta2-init.
+# In a private mount namespace we bind a real arm64 binary over it; the rest of the system is untouched.
+D="${DISPLAY:-:0}"
+exec sudo -n unshare -m sh -c 'mount --bind /usr/bin/bash /usr/local/sbin/gta2-init && exec runuser -u gta2 -- env HOME=/home/gta2 USER=gta2 DISPLAY="$0" "$@"' "$D" "$@"

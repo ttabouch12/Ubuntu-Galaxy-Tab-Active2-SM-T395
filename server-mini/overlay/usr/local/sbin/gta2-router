@@ -230,11 +230,17 @@ def slow_fields(status, hosts):
     if hosts is not None:
         n = 0
         rows = [d for d in dicts(hosts) if any(k in d for k in ('PhysAddress', 'MACAddress', 'IPAddress'))]
+        lst = []
         for d in rows:
             a = d.get('Active', d.get('X_ZYXEL_Active', True))
-            if str(a).lower() in ('1', 'true', 'yes', 'up'):
+            on = str(a).lower() in ('1', 'true', 'yes', 'up')
+            if on:
                 n += 1
+            # name + IP + link type only (no MAC addresses): shown on the tablet's devices page
+            lst.append({'name': str(d.get('HostName') or d.get('X_ZYXEL_DeviceName') or '')[:40], 'ip': str(d.get('IPAddress') or ''),
+                        'if': str(d.get('X_ZYXEL_ConnectionType') or d.get('InterfaceType') or d.get('Layer2Interface') or '')[:24], 'on': on})
         out['clients'] = n
+        out['hosts'] = sorted(lst, key=lambda h: (not h['on'], h['name'].lower() or '~', h['ip']))[:64]
     return out
 
 

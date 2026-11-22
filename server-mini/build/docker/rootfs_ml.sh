@@ -5,7 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
 sed -i 's/^Components: main.*/Components: main universe/' /etc/apt/sources.list.d/ubuntu.sources
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends systemd-sysv udev dbus kmod iproute2 iputils-ping python3-cryptography python3-requests openssh-server network-manager wpasupplicant \
+apt-get install -y -qq --no-install-recommends systemd-sysv udev dbus kmod iproute2 iputils-ping python3-cryptography python3-requests plymouth plymouth-label lxqt-panel lxqt-session lxqt-runner lxqt-config lxqt-qtplugin lxqt-globalkeys lxqt-notificationd lxqt-policykit pcmanfm-qt qterminal openbox breeze breeze-icon-theme breeze-cursor-theme fonts-noto-core featherpad yad librsvg2-bin git openssh-server network-manager wpasupplicant \
   sudo nano less ca-certificates curl htop systemd-timesyncd e2fsprogs tzdata dnsmasq-base \
   xserver-xorg-core xserver-xorg-video-fbdev xserver-xorg-input-libinput xinit x11-xserver-utils xinput xterm xdotool x11-utils \
   matchbox-window-manager matchbox-keyboard python3-tk python3-pil python3-pil.imagetk fonts-dejavu-core surf samba wsdd bluez \
@@ -44,6 +44,7 @@ ExecStart=/bin/sh -c 'echo 1 > /sys/block/zram0/reset; echo lz4 > /sys/block/zra
 WantedBy=multi-user.target
 S
 systemctl disable nmbd 2>/dev/null; systemctl mask samba-ad-dc 2>/dev/null; rm -f /etc/samba/smb.conf
+update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/gta2/gta2.plymouth 200 || true  # gta2 boot splash
 systemctl enable gta2-lpm gta2-share smbd gta2-wsdd gta2-bootok gta2-wdt gta2-ml-setup gta2-cpu gta2-thermal gta2-import gta2-wlan gta2-usbnet gta2-fbinit gta2-gui gta2-portainer gta2-sshkeys gta2-zram gta2-perf gta2-dash.socket gta2-panel.socket gta2-charge gta2-trialguard gta2-netmon gta2-router gta2-dsicheck docker NetworkManager ssh systemd-timesyncd
 systemctl disable getty@tty1 apt-daily-upgrade.timer apt-daily.timer dpkg-db-backup.timer e2scrub_all.timer motd-news.timer e2scrub_reap.service systemd-pstore.service 2>/dev/null
 systemctl mask systemd-networkd-wait-online NetworkManager-wait-online ModemManager systemd-hostnamed e2scrub_reap

@@ -1,0 +1,18 @@
+#!/bin/sh
+# gta2-navbar: on-screen back / home / keyboard bar at the bottom (Settings > display can hide it; flag ~/.config/gta2/nonavbar).
+# Qt cannot request a dock window on X11, so: start it, mark it _NET_WM_WINDOW_TYPE_DOCK + strut (56 px at the bottom), re-map it
+# so matchbox manages it as a dock and keeps app windows above it.
+export QT_QPA_PLATFORM=xcb QT_XCB_GL_INTEGRATION=xcb_egl QML_XHR_ALLOW_FILE_WRITE=1
+[ -f ~/.config/gta2/nonavbar ] && exit 0
+/usr/lib/qt6/bin/qml /usr/share/gta2/home-qml/Navbar.qml >/dev/null 2>&1 &
+P=$!
+for i in $(seq 1 50); do W=$(xdotool search --name '^gta2-navbar$' 2>/dev/null | head -1); [ -n "$W" ] && break; sleep 0.1; done
+if [ -n "$W" ]; then
+  H=$(xdpyinfo | awk '/dimensions/{split($2,a,"x"); print a[2]}'); WD=$(xdpyinfo | awk '/dimensions/{split($2,a,"x"); print a[1]}')
+  xdotool windowunmap --sync $W
+  xprop -id $W -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE _NET_WM_WINDOW_TYPE_DOCK
+  xprop -id $W -f _NET_WM_STRUT 32c -set _NET_WM_STRUT "0, 0, 0, 56"
+  xprop -id $W -f _NET_WM_STRUT_PARTIAL 32c -set _NET_WM_STRUT_PARTIAL "0, 0, 0, 56, 0, 0, 0, 0, 0, 0, 0, $((WD-1))"
+  xdotool windowmap --sync $W; xdotool windowmove $W 0 $((H-56))
+fi
+wait $P

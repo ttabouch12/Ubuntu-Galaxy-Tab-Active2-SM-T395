@@ -1,0 +1,4 @@
+# gta2srv: plain dark desktop (overrides the theme's wallpaper)
+DesktopBackgroundImage=""
+DesktopBackgroundColor="rgb:1d/1d/1d"
+DesktopBackgroundCenter=0

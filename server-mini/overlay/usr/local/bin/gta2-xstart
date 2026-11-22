@@ -1,0 +1,7 @@
+#!/bin/sh
+# gta2-xstart: X for gta2-gui. Tablet mode: touch only, no cursor, gta2-session (QML home).
+# Desktop mode (flag ~/.config/gta2/desktop, set by gta2-desktop): mouse cursor + IceWM (gta2-desktop-session).
+if [ -f /home/gta2/.config/gta2/desktop ]; then
+  exec /usr/bin/xinit /usr/local/bin/gta2-desktop-session -- :0 vt1 -nolisten tcp -keeptty
+fi
+exec /usr/bin/xinit /usr/local/bin/gta2-session -- :0 vt1 -nolisten tcp -keeptty -nocursor

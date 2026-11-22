@@ -1,0 +1,38 @@
+diff --git a/drivers/gpu/drm/exynos/exynos7_drm_decon.c b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+index 640a32eea..2722026a5 100644
+--- a/drivers/gpu/drm/exynos/exynos7_drm_decon.c
++++ b/drivers/gpu/drm/exynos/exynos7_drm_decon.c
+@@ -194,8 +194,14 @@ static u32 decon_calc_clkdiv(struct decon_context *ctx,
+ 	unsigned long ideal_clk = mode->clock * 1000;
+ 	u32 clkdiv;
+ 
+-	/* Find the clock divider value that gets us closest to ideal_clk */
+-	clkdiv = DIV_ROUND_UP(clk_get_rate(ctx->vclk), ideal_clk);
++	/*
++	 * Find the clock divider value that gets us closest to ideal_clk.
++	 * Rounding up halved the refresh rate when vclk is only slightly above the
++	 * mode clock (Exynos 7870 Tab Active2: 69 MHz vs 68.43 MHz -> div 2 -> 30 Hz).
++	 */
++	clkdiv = DIV_ROUND_CLOSEST(clk_get_rate(ctx->vclk), ideal_clk);
++	if (!clkdiv)
++		clkdiv = 1;
+ 
+ 	return (clkdiv < 0x100) ? clkdiv : 0xff;
+ }
+@@ -250,12 +256,11 @@ static void decon_commit(struct exynos_drm_crtc *crtc)
+ 	val = VIDCON0_ENVID | VIDCON0_ENVID_F;
+ 	writel(val, ctx->regs + VIDCON0);
+ 
++	/* always program the divider: the bootloader may have left another value */
+ 	clkdiv = decon_calc_clkdiv(ctx, mode);
+-	if (clkdiv > 1) {
+-		val = VCLKCON1_CLKVAL_NUM_VCLK(clkdiv - 1);
+-		writel(val, ctx->regs + VCLKCON1);
+-		writel(val, ctx->regs + VCLKCON2);
+-	}
++	val = VCLKCON1_CLKVAL_NUM_VCLK(clkdiv - 1);
++	writel(val, ctx->regs + VCLKCON1);
++	writel(val, ctx->regs + VCLKCON2);
+ 
+ 	val = readl(ctx->regs + DECON_UPDATE);
+ 	val |= DECON_UPDATE_STANDALONE_F;

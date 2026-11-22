@@ -1,0 +1,16 @@
+#!/bin/sh
+# gta2-desktop on [left|right|normal] | off | rotate
+#   Desktop mode for the USB-C dock: IceWM desktop in landscape with mouse cursor. "off" returns to the tablet home.
+#   Switching restarts the X session (~5 s); apps open in the other mode are closed.
+F=/home/gta2/.config/gta2/desktop
+mkdir -p /home/gta2/.config/gta2
+case "$1" in
+  on)  echo "${2:-left}" > $F ;;
+  off) rm -f $F ;;
+  rotate)  # flip landscape side without leaving desktop mode
+       case "$(cat $F 2>/dev/null)" in left) echo right > $F ;; right) echo normal > $F ;; *) echo left > $F ;; esac ;;
+  *) echo "usage: gta2-desktop on [left|right|normal] | off | rotate"; exit 1 ;;
+esac
+chown -R gta2:gta2 /home/gta2/.config/gta2 2>/dev/null
+# queue the X restart in systemd (--no-block): a plain background job would die with the caller's session/cgroup
+if [ "$(id -u)" = 0 ]; then systemctl --no-block restart gta2-gui; else sudo -n systemctl --no-block restart gta2-gui; fi

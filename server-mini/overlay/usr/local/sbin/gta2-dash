@@ -48,14 +48,14 @@ def api():
     bdir = os.path.dirname(cap)
     chg = (glob.glob('/sys/class/power_supply/*charger*/online') or [''])[0]
     disks = []
-    for name, path in (('System', '/'), ('Data', '/userdata'), ('SD card', '/media/sdcard')):
-        if path == '/media/sdcard' and not os.path.ismount(path): continue
+    for name, path in (('System', '/'), ('Data', '/userdata'), ('Share drive', SHARE), ('SD card', '/media/sdcard')):
+        if path in (SHARE, '/media/sdcard') and not os.path.ismount(path): continue
         try:
             s = os.statvfs(path); t = s.f_blocks * s.f_frsize; f = s.f_bavail * s.f_frsize
             disks.append({'name': name, 'used': round((t - f) / 2**30, 1), 'total': round(t / 2**30, 1)})
         except OSError: pass
     cpu = [int(rd(p, '0')) // 1000 for p in sorted(glob.glob('/sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq'))]
-    try: net = json.load(open('/run/gta2/netmon.json'))
+    try: net = json.load(open('/run/gta2/netmon.json')); net.pop('tgt', None)
     except Exception: net = None
     try: router = json.load(open('/run/gta2/router.json'))  # gta2-router (Zyxel WAN stats), optional
     except Exception: router = None
@@ -64,9 +64,292 @@ def api():
             'uptime': int(float(rd('/proc/uptime', '0').split()[0])), 'load': rd('/proc/loadavg').split()[:3],
             'mem': [tot - av, tot], 'temp': int(temp) // 1000 if temp.isdigit() else None, 'cpu_mhz': cpu,
             'battery': {'pct': int(rd(cap, '0') or 0), 'status': rd(bdir + '/status'), 'plugged': rd(chg, '0') == '1'} if cap else None,
-            'disks': disks, 'pihole': pihole(), 'net': net, 'router': router,
+            'disks': disks, 'pihole': pihole(), 'net': net, 'router': {k: v for k, v in (router or {}).items() if k != 'hosts'} or None,
             'containers': [dict(zip(('name', 'status'), (l.split('|') + [''])[:2])) for l in dk.splitlines()],
-            'wallpaper': bool(wallpaper())}
+            'wallpaper': bool(wallpaper()), 'netinfo': netinfo(), 'kernel': os.uname().release,
+            'cpu_pct': cpu_pct(), 'docker_total': len(sh("docker ps -aq 2>/dev/null").split())}
+
+
+def cpu_pct():  # CPU use over 0.3 s
+    def snap():
+        a = list(map(int, open('/proc/stat').readline().split()[1:])); return a[3] + a[4], sum(a)
+    i0, t0 = snap(); time.sleep(0.3); i1, t1 = snap()
+    return round(100 * (1 - (i1 - i0) / max(1, t1 - t0)))
+
+
+def netinfo():
+    """interfaces with address, kind, link speed, Wi-Fi details, gateway (for the Home page)"""
+    out = {'ifs': [], 'gw': None, 'wifi': None}
+    try: addrs = json.loads(sh('ip -j -4 addr') or '[]')
+    except Exception: addrs = []
+    for i in addrs:
+        n = i.get('ifname', '')
+        if n == 'lo' or n.startswith(('docker', 'veth', 'br-', 'hassio')): continue
+        ip = next((a['local'] + '/' + str(a['prefixlen']) for a in i.get('addr_info', []) if a.get('local')), None)
+        d = '/sys/class/net/' + n
+        kind = ('wifi' if os.path.isdir(d + '/wireless') else 'vpn' if n.startswith(('wg', 'tailscale', 'tun', 'zt'))
+                else 'usb' if n.startswith(('usb', 'rndis')) else 'ethernet')
+        sp = rd(d + '/speed', '')
+        out['ifs'].append({'name': n, 'kind': kind, 'ip': ip, 'up': rd(d + '/operstate') in ('up', 'unknown'),
+                           'speed': int(sp) if sp.lstrip('-').isdigit() and int(sp) > 0 else None,
+                           'rx': int(rd(d + '/statistics/rx_bytes', '0') or 0), 'tx': int(rd(d + '/statistics/tx_bytes', '0') or 0)})
+    try: out['gw'] = (json.loads(sh('ip -j route show default') or '[]') or [{}])[0].get('gateway')
+    except Exception: pass
+    w = sh("nmcli -t -f IN-USE,SSID,SIGNAL,FREQ,RATE,SECURITY dev wifi list --rescan no 2>/dev/null | grep '^\\*'")
+    if w:
+        p = w.replace('\\:', '\x00').split(':')
+        p = [x.replace('\x00', ':') for x in p] + [''] * 6
+        out['wifi'] = {'ssid': p[1], 'signal': int(p[2]) if p[2].isdigit() else None, 'freq': p[3], 'rate': p[4], 'sec': p[5]}
+    return out
+
+
+# ---------- /detail?k=<tile>: read-only breakdown for the home screen's detail pages.
+# Returns a small view model the QML renders generically:
+#   {"hero": [[label, value, unit], ...], "charts": [{"name", "unit", "series": [{"c": colour, "pts": [..]}]}],
+#    "sections": [{"head", "rows": [[k, v], ...]}], "actions": [[label, action]]}
+DETAIL_KEYS = {'net', 'lat', 'sp', 'dev', 'ph', 'phq', 'cpu', 'mem', 'bat', 'disk', 'wifi', 'today', 'up', 'ctr'}
+
+
+def jf(p):
+    try: return json.load(open(p))
+    except Exception: return {}
+
+
+def gbs(b):
+    if b is None: return '–'
+    b = float(b)
+    return '%.2f TB' % (b / 1e12) if b >= 1e12 else '%.1f GB' % (b / 1e9) if b >= 1e9 else '%.0f MB' % (b / 1e6)
+
+
+def dur(s):
+    if s is None: return '–'
+    s = int(s); d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
+    return '%dd %dh' % (d, h) if d else '%dh %dm' % (h, m) if h else '%dm' % m
+
+
+def ps_top(sort, n=8):
+    rows = []
+    for l in sh("ps -eo comm,pcpu,rss --sort=-%s --no-headers | head -%d" % (sort, n)).splitlines():
+        p = l.split()
+        if len(p) >= 3: rows.append([p[0][:22], '%s%% cpu · %d MB' % (p[1], int(p[2]) // 1024)])
+    return rows
+
+
+def pistat(path):
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8083/api/' + path, timeout=2) as r: return json.load(r)
+    except Exception: return {}
+
+
+def lat_stats(vals):
+    ok = [v for v in vals if v is not None]
+    if not vals: return None
+    if not ok: return {'loss': 100.0}
+    jit = sum(abs(a - b) for a, b in zip(ok, ok[1:])) / max(1, len(ok) - 1)
+    return {'avg': sum(ok) / len(ok), 'min': min(ok), 'max': max(ok), 'jit': jit, 'loss': 100.0 * (len(vals) - len(ok)) / len(vals), 'cur': vals[-1]}
+
+
+def detail(k):
+    net, rt = jf('/run/gta2/netmon.json'), jf('/run/gta2/router.json')
+    H, C, S, A = [], [], [], []
+    if k == 'net' or k == 'today':
+        if rt.get('ok'):
+            H = [['download', '%.1f' % (rt.get('rx_mbit') or 0), 'Mbit/s'], ['upload', '%.1f' % (rt.get('tx_mbit') or 0), 'Mbit/s'],
+                 ['today', gbs((rt.get('day_rx') or 0) + (rt.get('day_tx') or 0)).split()[0], gbs((rt.get('day_rx') or 0) + (rt.get('day_tx') or 0)).split()[1]]]
+            S.append({'head': 'whole home (router)', 'rows': [
+                ['now', '↓ %.1f  ↑ %.1f Mbit/s' % (rt.get('rx_mbit') or 0, rt.get('tx_mbit') or 0)],
+                ['average 1 min', '↓ %.1f  ↑ %.1f' % (rt.get('avg_rx_1m') or 0, rt.get('avg_tx_1m') or 0)],
+                ['average 1 h', '↓ %.1f  ↑ %.1f' % (rt.get('avg_rx_1h') or 0, rt.get('avg_tx_1h') or 0)],
+                ['average 24 h', '↓ %.1f  ↑ %.1f' % (rt.get('avg_rx_24h') or 0, rt.get('avg_tx_24h') or 0)],
+                ['peak 1 h', '↓ %.1f  ↑ %.1f' % (rt.get('peak_rx_1h') or 0, rt.get('peak_tx_1h') or 0)],
+                ['peak 24 h', '↓ %.1f  ↑ %.1f' % (rt.get('peak_rx_24h') or 0, rt.get('peak_tx_24h') or 0)]]})
+            S.append({'head': 'data used', 'rows': [
+                ['today', '↓ %s  ↑ %s' % (gbs(rt.get('day_rx')), gbs(rt.get('day_tx')))],
+                ['this month', '↓ %s  ↑ %s' % (gbs(rt.get('month_rx')), gbs(rt.get('month_tx')))],
+                ['since router start', '↓ %s  ↑ %s' % (gbs(rt.get('rx_total')), gbs(rt.get('tx_total')))]]})
+            S.append({'head': 'line', 'rows': [['WAN', 'up' if rt.get('wan_up') is not False else 'DOWN'],
+                ['link rate', '%s / %s Mbit' % (rt.get('line_down', '–'), rt.get('line_up', '–'))],
+                ['router uptime', dur(rt.get('uptime'))], ['ping gateway / internet', '%s / %s ms' % (rt.get('ping_gw', '–'), rt.get('ping_wan', '–'))],
+                ['packet loss', '%s %%' % rt.get('loss_wan', '–')], ['firmware', str(rt.get('fw', '–'))]]})
+        else:
+            r = net.get('rate') or {}
+            H = [['download', '%.1f' % (r.get('rx') or 0), 'Mbit/s'], ['upload', '%.1f' % (r.get('tx') or 0), 'Mbit/s']]
+            S.append({'head': 'router', 'rows': [['status', 'no router data (gta2-router not set up)']]})
+        C.append({'name': 'live · last 5 min (Mbit/s)', 'unit': 'Mbit/s', 'live': True,
+                  'series': [{'c': '#2d89ef', 'pts': []}, {'c': '#e3a21a', 'pts': []}]})
+        h = net.get('hist') or []
+        if h: C.append({'name': 'tablet · last 3 h (Mbit/s)', 'unit': 'Mbit/s', 'series': [{'c': '#2d89ef', 'pts': [x[2] for x in h]}, {'c': '#e3a21a', 'pts': [x[3] for x in h]}]})
+        S.append({'head': 'tablet interfaces', 'rows': [[i['name'] + ' · ' + i['kind'], '↓ %s  ↑ %s' % (gbs(i['rx']), gbs(i['tx']))] for i in netinfo()['ifs']]})
+        out = net.get('outages') or []
+        if out: S.append({'head': 'last outages', 'rows': [[time.strftime('%d %b %H:%M', time.localtime(o['start'])), '%d s' % (o['end'] - o['start'])] for o in out[-6:][::-1]]})
+    elif k == 'lat':
+        names, rows = net.get('tgt_names') or [], net.get('tgt') or []
+        cur = net.get('lat') or {}
+        H = [[n, '%.0f' % cur[n] if cur.get(n) is not None else '–', 'ms'] for n in ['router', '1.1.1.1', '8.8.8.8'] if n in cur]
+        cols = ['#00aba9', '#2d89ef', '#e3a21a', '#9f00a7']
+        if rows:
+            C.append({'name': 'latency · last 3 h (ms)', 'unit': 'ms', 'series': [{'c': cols[j % 4], 'pts': [r[j + 1] for r in rows[::3]]} for j in range(len(names))]})
+            for j, n in enumerate(names):
+                st_ = lat_stats([r[j + 1] for r in rows])
+                if not st_: continue
+                S.append({'head': n, 'rows': [['average', '%.1f ms' % st_['avg'] if 'avg' in st_ else '–'], ['min / max', '%.1f / %.1f ms' % (st_['min'], st_['max']) if 'min' in st_ else '–'],
+                                             ['jitter', '%.1f ms' % st_['jit'] if 'jit' in st_ else '–'], ['packet loss', '%.1f %%' % st_['loss']]]})
+            S.append({'head': 'legend', 'rows': [[n, ['teal', 'blue', 'amber', 'purple'][j % 4]] for j, n in enumerate(names)]})
+        else:
+            h = net.get('hist') or []
+            if h: C.append({'name': 'best latency · last 3 h (ms)', 'unit': 'ms', 'series': [{'c': '#2d89ef', 'pts': [x[1] for x in h]}]})
+            S.append({'head': 'per target', 'rows': [['history', 'collecting… (starts after the update)']]})
+    elif k == 'sp':
+        sp = [x for x in (net.get('speed') or []) if x.get('down') is not None]
+        if sp:
+            l = sp[-1]
+            H = [['download', '%.0f' % l['down'], 'Mbit/s'], ['upload', '%.0f' % (l.get('up') or 0), 'Mbit/s'], ['ping', '%.0f' % (l.get('ping') or 0), 'ms']]
+            C.append({'name': 'all runs (Mbit/s)', 'unit': 'Mbit/s', 'series': [{'c': '#2d89ef', 'pts': [x['down'] for x in sp]}, {'c': '#e3a21a', 'pts': [x.get('up') or 0 for x in sp]}]})
+            dn = [x['down'] for x in sp]
+            S.append({'head': 'summary', 'rows': [['runs', str(len(sp))], ['download avg / best', '%.0f / %.0f Mbit/s' % (sum(dn) / len(dn), max(dn))],
+                                                  ['last run', time.strftime('%d %b %H:%M', time.localtime(l['t']))], ['runs every', '15 min on Ethernet']]})
+            S.append({'head': 'history', 'rows': [[time.strftime('%d %b %H:%M', time.localtime(x['t'])), '↓ %.0f  ↑ %.0f  · %s ms' % (x['down'], x.get('up') or 0, '%.0f' % x['ping'] if x.get('ping') else '–')] for x in sp[::-1][:24]]})
+        A.append(['run speed test now', 'speedtest'])
+    elif k == 'dev':
+        hs = rt.get('hosts')
+        H = [['online', str(rt.get('clients', '–')), 'devices']]
+        if hs:
+            on = [h for h in hs if h['on']]
+            H.append(['known', str(len(hs)), ''])
+            S.append({'head': 'online now', 'rows': [[h['name'] or 'unnamed', (h['ip'] + ('  · ' + h['if'] if h['if'] else ''))] for h in on]})
+            off = [h for h in hs if not h['on']]
+            if off: S.append({'head': 'seen before', 'rows': [[h['name'] or 'unnamed', h['ip']] for h in off[:20]]})
+        else:
+            S.append({'head': 'devices', 'rows': [['list', 'appears within a minute of the router update']]})
+        pc = pistat('stats/top_clients?count=10').get('clients') or []
+        if pc: S.append({'head': 'busiest on dns (pi-hole)', 'rows': [[c.get('name') or c.get('ip'), '%d queries' % c.get('count', 0)] for c in pc]})
+    elif k in ('ph', 'phq'):
+        p = pihole() or {}
+        H = [['blocked', '%s' % p.get('percent', '–'), '%'], ['queries', str(p.get('total', '–')), ''], ['clients', str(p.get('clients', '–')), '']]
+        hist = pistat('history').get('history') or []
+        if hist: C.append({'name': 'queries · 24 h (blue total, red blocked)', 'unit': '', 'series': [{'c': '#2d89ef', 'pts': [x.get('total', 0) for x in hist]}, {'c': '#b91d47', 'pts': [x.get('blocked', 0) for x in hist]}]})
+        S.append({'head': 'blocking', 'rows': [['blocked queries', str(p.get('blocked', '–'))], ['domains on blocklists', str(p.get('domains', '–'))]]})
+        tb = pistat('stats/top_domains?blocked=true&count=10').get('domains') or []
+        if tb: S.append({'head': 'top blocked', 'rows': [[d['domain'], str(d['count'])] for d in tb]})
+        ta = pistat('stats/top_domains?count=10').get('domains') or []
+        if ta: S.append({'head': 'top allowed', 'rows': [[d['domain'], str(d['count'])] for d in ta]})
+        tc = pistat('stats/top_clients?count=10').get('clients') or []
+        if tc: S.append({'head': 'top clients', 'rows': [[c.get('name') or c.get('ip'), str(c.get('count', 0))] for c in tc]})
+        up = pistat('stats/upstreams').get('upstreams') or []
+        if up: S.append({'head': 'answered by', 'rows': [[u.get('name') or u.get('ip'), str(u.get('count', 0))] for u in up]})
+    elif k == 'cpu':
+        def snap():
+            r = {}
+            for l in open('/proc/stat'):
+                if l.startswith('cpu') and l[3].isdigit():
+                    a = list(map(int, l.split()[1:])); r[l.split()[0]] = (a[3] + a[4], sum(a))
+            return r
+        s0 = snap(); time.sleep(0.25); s1 = snap()
+        use = {c: round(100 * (1 - (s1[c][0] - s0[c][0]) / max(1, s1[c][1] - s0[c][1]))) for c in s1}
+        cores = sorted(use, key=lambda c: int(c[3:]))
+        tot = round(sum(use.values()) / max(1, len(use)))
+        temps = []
+        for z in sorted(glob.glob('/sys/class/thermal/thermal_zone*')):
+            t = rd(z + '/temp', '')
+            if t.lstrip('-').isdigit(): temps.append([rd(z + '/type'), '%.1f °C' % (int(t) / 1000)])
+        H = [['usage', str(tot), '%'], ['temp', temps[0][1].split()[0] if temps else '–', '°C'], ['load', rd('/proc/loadavg').split()[0], '']]
+        S.append({'head': 'cores', 'rows': [[c, '%d %% · %d MHz' % (use[c], int(rd('/sys/devices/system/cpu/%s/cpufreq/scaling_cur_freq' % c, '0') or 0) // 1000)] for c in cores]})
+        pol = '/sys/devices/system/cpu/cpufreq/policy0/'
+        S.append({'head': 'clock', 'rows': [['governor', rd(pol + 'scaling_governor')], ['range', '%d–%d MHz' % (int(rd(pol + 'scaling_min_freq', '0') or 0) // 1000, int(rd(pol + 'scaling_max_freq', '0') or 0) // 1000)],
+                                            ['gpu', '%d MHz' % (int(rd('/sys/class/devfreq/11400000.gpu/cur_freq', '0') or 0) // 1000000)], ['load 1/5/15 min', ' '.join(rd('/proc/loadavg').split()[:3])]]})
+        if temps: S.append({'head': 'temperatures', 'rows': temps})
+        S.append({'head': 'top processes', 'rows': ps_top('pcpu')})
+    elif k == 'mem':
+        m = {l.split(':')[0]: int(l.split()[1]) // 1024 for l in open('/proc/meminfo')}
+        used = m['MemTotal'] - m['MemAvailable']
+        H = [['used', '%.1f' % (used / 1024), 'GB'], ['free', '%.1f' % (m['MemAvailable'] / 1024), 'GB'], ['swap used', '%d' % (m['SwapTotal'] - m['SwapFree']), 'MB']]
+        S.append({'head': 'memory', 'rows': [['total', '%d MB' % m['MemTotal']], ['in use by programs', '%d MB' % used], ['cache (freed when needed)', '%d MB' % (m.get('Cached', 0) + m.get('Buffers', 0))],
+                                             ['completely free', '%d MB' % m['MemFree']], ['shared', '%d MB' % m.get('Shmem', 0)]]})
+        z = rd('/sys/block/zram0/mm_stat').split()
+        if z:
+            S.append({'head': 'zram (compressed swap in RAM)', 'rows': [['size', '%d MB' % (int(rd('/sys/block/zram0/disksize', '0')) >> 20)], ['stored', '%d MB' % (int(z[0]) >> 20)],
+                     ['takes', '%d MB' % (int(z[2]) >> 20)], ['ratio', '%.1f×' % (int(z[0]) / max(1, int(z[1])))], ['algorithm', rd('/sys/block/zram0/comp_algorithm').split('[')[-1].split(']')[0]]]})
+        S.append({'head': 'top processes (memory)', 'rows': ps_top('rss')})
+    elif k == 'bat':
+        def ue(p):
+            d = {}
+            for l in rd(p + '/uevent').splitlines():
+                if '=' in l: a, b = l.split('=', 1); d[a.replace('POWER_SUPPLY_', '').lower()] = b
+            return d
+        fg = ue((glob.glob('/sys/class/power_supply/*fuel*') or [''])[0]); ch = ue((glob.glob('/sys/class/power_supply/*charger*') or [''])[0])
+        num = lambda d, key, div: (int(d[key]) / div) if d.get(key, '').lstrip('-').isdigit() else None
+        cap, cur, vol, tmp = fg.get('capacity'), num(fg, 'current_now', 1000), num(fg, 'voltage_now', 1e6), num(fg, 'temp', 10)
+        H = [['charge', cap or '–', '%'], ['current', '%.0f' % cur if cur is not None else '–', 'mA'], ['temp', '%.1f' % tmp if tmp is not None else '–', '°C']]
+        rows = [['status', fg.get('status', '–').lower()], ['charger', 'connected' if ch.get('online') == '1' else 'not connected'],
+                ['charging', ch.get('status', '–').lower()], ['charge limit', '%s %%' % rd('/etc/gta2/charge_limit', '100')]]
+        if vol: rows.append(['voltage', '%.2f V' % vol])
+        if vol and cur is not None: rows.append(['power', '%.1f W' % (vol * cur / 1000)])
+        if fg.get('charge_full_design'): rows.append(['design capacity', '%d mAh' % (int(fg['charge_full_design']) // 1000)])
+        for key, lab in (('health', 'health'), ('charge_type', 'charge type'), ('constant_charge_current', 'charge current'), ('technology', 'technology')):
+            v = ch.get(key) or fg.get(key)
+            if v: rows.append([lab, (str(int(v) // 1000) + ' mA') if key == 'constant_charge_current' and v.isdigit() else v.lower()])
+        S.append({'head': 'battery', 'rows': rows})
+    elif k == 'disk':
+        rows = []
+        for l in sh("df -B1 --output=target,size,used,avail -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs 2>/dev/null | tail -n +2").splitlines():
+            p = l.split()
+            if len(p) == 4 and not p[0].startswith(('/var/lib/docker', '/snap', '/run')): rows.append([p[0], '%s free of %s' % (gbs(int(p[3])), gbs(int(p[1])))])
+        big = [d for d in api_disks()]
+        H = [[d['name'].lower(), '%.0f' % (d['total'] - d['used']), 'GB free'] for d in big[:3]]
+        S.append({'head': 'mounted', 'rows': rows})
+        dd = DOCKER_DF.get()
+        if dd: S.append({'head': 'docker', 'rows': dd})
+        S.append({'head': 'share drive', 'rows': [['NAS share', SHARE + (' (mounted)' if os.path.ismount(SHARE) else ' (500 GB drive not connected)')]]})
+    elif k == 'wifi':
+        ni = netinfo(); w = ni.get('wifi') or {}
+        eth = [i for i in ni['ifs'] if i['kind'] == 'ethernet' and i['ip']]
+        H = [['ethernet', str(eth[0]['speed']) if eth and eth[0]['speed'] else '–', 'Mbit'], ['wi-fi', str(w.get('signal', '–')), '%']]
+        S.append({'head': 'interfaces', 'rows': [[i['name'] + ' · ' + i['kind'], (i['ip'] or 'no address') + (' · %d Mbit' % i['speed'] if i['speed'] else '')] for i in ni['ifs']]})
+        if w: S.append({'head': 'wi-fi', 'rows': [['network', w.get('ssid', '')], ['signal', '%s %%' % w.get('signal')], ['band', w.get('freq', '')], ['rate', w.get('rate', '')], ['security', w.get('sec', '')]]})
+        dns = [l.split()[1] for l in rd('/run/systemd/resolve/resolv.conf').splitlines() if l.startswith('nameserver')]
+        ts = sh('tailscale ip -4 2>/dev/null')
+        S.append({'head': 'routing', 'rows': [['gateway', ni.get('gw') or '–'], ['dns servers', ' '.join(dns) or '–'], ['tailscale', ts or 'off'], ['host name', socket.gethostname()]]})
+    elif k == 'up':
+        up = float(rd('/proc/uptime', '0').split()[0])
+        H = [['up', dur(up).split()[0], ' '.join(dur(up).split()[1:])], ['time', time.strftime('%H:%M'), '']]
+        S.append({'head': 'system', 'rows': [['date', time.strftime('%A %d %B %Y')], ['time zone', time.strftime('%Z (UTC%z)')], ['booted', time.strftime('%d %b %H:%M', time.localtime(time.time() - up))],
+                                             ['os', sh('. /etc/os-release; echo $PRETTY_NAME')], ['kernel', os.uname().release], ['host name', socket.gethostname()]]})
+    elif k == 'ctr':
+        rows = []
+        for l in sh("docker ps -a --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null").splitlines():
+            p = (l.split('|') + ['', ''])[:3]; rows.append([p[0], p[1] + ' · ' + p[2].split('/')[-1][:28]])
+        H = [['running', str(len([r for r in rows if r[1].startswith('Up')])), ''], ['total', str(len(rows)), '']]
+        S.append({'head': 'containers', 'rows': rows or [['docker', 'no containers']]})
+        dd = DOCKER_DF.get()
+        if dd: S.append({'head': 'docker disk use', 'rows': dd})
+        A.append(['open portainer', 'open:http://127.0.0.1:9000/'])
+    return {'hero': H, 'charts': C, 'sections': S, 'actions': A}
+
+
+def api_disks():
+    out = []
+    for name, path in (('Share drive', SHARE), ('Data', '/userdata'), ('System', '/')):
+        if path == SHARE and not os.path.ismount(path): continue
+        try:
+            s = os.statvfs(path); t = s.f_blocks * s.f_frsize; f = s.f_bavail * s.f_frsize
+            out.append({'name': name, 'used': (t - f) / 2**30, 'total': t / 2**30})
+        except OSError: pass
+    return out
+
+
+class _DockerDF:  # `docker system df` takes ~1 s: cache it for 2 min in /run
+    P = '/run/gta2/dockerdf.json'
+    def get(self):
+        try:
+            if time.time() - os.path.getmtime(self.P) < 120: return json.load(open(self.P))
+        except OSError: pass
+        rows = []
+        for l in sh("docker system df --format '{{.Type}}|{{.Size}}|{{.Reclaimable}}' 2>/dev/null").splitlines():
+            p = (l.split('|') + ['', ''])[:3]; rows.append([p[0].lower(), '%s · %s reclaimable' % (p[1], p[2].split(' ')[0])])
+        try: json.dump(rows, open(self.P, 'w'))
+        except OSError: pass
+        return rows
+DOCKER_DF = _DockerDF()
 
 
 def wallpaper():
@@ -222,13 +505,208 @@ tick();setInterval(tick,5000);
 </script></body></html>'''
 
 
+HOME = '/usr/share/gta2/home/index.html'   # unified UI (tablet screen + LAN); old page at /classic
+
+
+def peer_local():  # control endpoints only for the tablet's own kiosk, never the LAN
+    try:
+        return socket.socket(fileno=os.dup(0)).getpeername()[0] in ('127.0.0.1', '::1', '::ffff:127.0.0.1')
+    except OSError:
+        return False
+
+
+def x(cmd):  # start a program in the tablet's X session as the gta2 user.
+    # Own transient unit: this request's service (socket activation) is killed when the request ends,
+    # and with it anything started directly from here.
+    subprocess.Popen(['systemd-run', '--quiet', '--collect', '--uid=gta2', '--gid=gta2', '--setenv=DISPLAY=:0',
+                      '--setenv=HOME=/home/gta2', '--setenv=XDG_RUNTIME_DIR=/run/user/1000', 'sh', '-c', cmd],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+UICFG = '/home/gta2/.config/gta2/ui.json'   # read by gta2-keys (screen timeout)
+CTL_AREAS = {'time', 'device', 'update', 'cpu', 'bt', 'battery', 'ssh', 'vpn', 'hotspot', 'docker'}
+
+
+def run(argv, t=60):  # argv list, never a shell: values typed on the page cannot inject commands
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=t)
+        return (r.stdout + r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return 'error: timed out'
+    except Exception as e:
+        return 'error: %s' % e
+
+
+def kv(t):
+    return dict(x.split('=', 1) for x in t.split() if '=' in x)
+
+
+def uicfg(upd=None):
+    try: c = json.load(open(UICFG))
+    except Exception: c = {}
+    c.setdefault('screen_off', 0)
+    if upd:
+        c.update(upd); os.makedirs(os.path.dirname(UICFG), exist_ok=True)
+        json.dump(c, open(UICFG, 'w')); os.system('chown -R gta2:gta2 /home/gta2/.config/gta2')
+    return c
+
+
+def status():  # everything the Settings page shows, in one call
+    st = {k: kv(run(['/usr/local/sbin/gta2-ctl', k, 'status'], 15)) for k in ('cpu', 'ssh', 'hotspot', 'time')}
+    st['vpn'] = run(['/usr/local/sbin/gta2-ctl', 'vpn', 'status'], 15)
+    st['battery'] = run(['/usr/local/sbin/gta2-ctl', 'battery', 'status'], 15)
+    st['charge_limit'] = int(rd('/etc/gta2/charge_limit', '100') or 100)
+    bt = run(['/usr/local/sbin/gta2-ctl', 'bt', 'status'], 15)
+    st['bt'] = {'on': 'Powered: yes' in bt, 'text': bt}
+    st['share'] = dict(l.split('=', 1) for l in run(['/usr/local/sbin/gta2-share', 'status'], 15).splitlines() if '=' in l)
+    st['wifi_on'] = 'enabled' in run(['nmcli', 'radio', 'wifi'], 10)
+    st['time']['now'] = time.strftime('%Y-%m-%d %H:%M')
+    st['navbar'] = not os.path.exists('/home/gta2/.config/gta2/nonavbar')
+    st['ui'] = uicfg(); st['host'] = socket.gethostname()
+    st['os'] = sh(". /etc/os-release; echo $PRETTY_NAME"); st['kernel'] = os.uname().release
+    st['space'] = sh("df -h / /userdata | awk 'NR>1{print $6\"  \"$4\" free of \"$2}'")
+    return st
+
+
+def wifi_scan():
+    run(['nmcli', 'dev', 'wifi', 'rescan'], 15); time.sleep(2)
+    out, seen = [], set()
+    for l in run(['nmcli', '-t', '-f', 'IN-USE,SSID,SIGNAL,SECURITY', 'dev', 'wifi', 'list'], 20).splitlines():
+        p = [x.replace('\x00', ':') for x in l.replace('\\:', '\x00').split(':')] + ['', '', '', '']
+        if not p[1] or p[1] in seen: continue
+        seen.add(p[1]); out.append({'on': p[0] == '*', 'ssid': p[1], 'signal': int(p[2] or 0), 'sec': p[3]})
+    saved = run(['nmcli', '-t', '-f', 'NAME,TYPE', 'con', 'show'], 10)
+    known = {l.rsplit(':', 1)[0] for l in saved.splitlines() if l.endswith('wireless')}
+    for w in out: w['saved'] = w['ssid'] in known
+    return sorted(out, key=lambda w: (not w['on'], -w['signal']))
+
+
+def ctl(a, v):
+    if a in ('launch', 'uninstall', 'apps_job'):
+        return gta2apps.ctl(a, v) if gta2apps else None
+    if a in ('storage', 'store_job', 'docker_move', 'app_storage', 'app_move'):   # external drive for apps (gta2store.py)
+        sys.path.insert(0, '/usr/local/lib/gta2'); import gta2store
+        return gta2store.ctl(a, v)
+    bl = (glob.glob('/sys/class/backlight/*') or [''])[0]
+    v = v if v is not None else ''
+    if a == 'info':
+        return {'bright': int(rd(bl + '/brightness', '0') or 0), 'max': int(rd(bl + '/max_brightness', '255') or 255)}
+    if a == 'status': return status()
+    if a == 'bright':
+        open(bl + '/brightness', 'w').write(str(max(5, int(v))))
+    elif a == 'screenoff': x('gta2-keys --screen-off')
+    elif a == 'keyboard': x('pkill -x matchbox-keyboa || matchbox-keyboard')
+    elif a == 'navbar':  # on-screen back/home/keyboard bar (gta2-navbar); flag file hides it
+        p = '/home/gta2/.config/gta2/nonavbar'
+        if v == 'off':
+            open(p, 'w').close(); subprocess.call(['pkill', '-f', 'home-qml/Navbar.qml'])
+        else:
+            if os.path.exists(p): os.remove(p)
+            if subprocess.call(['pgrep', '-f', 'home-qml/Navbar.qml'], stdout=subprocess.DEVNULL) != 0: x('gta2-navbar')
+    elif a == 'pins':  # home-screen pins: no value = read, list = save (ids/names/icon URLs only)
+        p = '/home/gta2/.config/gta2/pins.json'
+        if isinstance(v, list):
+            clean = [{'id': str(i.get('id', ''))[:80], 'name': str(i.get('name', ''))[:60], 'icon': str(i.get('icon', ''))[:300]}
+                     for i in v[:48] if isinstance(i, dict) and i.get('id')]
+            os.makedirs(os.path.dirname(p), exist_ok=True); json.dump(clean, open(p, 'w')); os.system('chown gta2:gta2 ' + p)
+            return {'ok': True}
+        try: return {'ok': True, 'pins': json.load(open(p))}
+        except Exception: return {'ok': True, 'pins': []}
+    elif a == 'kbd_show': x('pgrep -x matchbox-keyboa >/dev/null || matchbox-keyboard')
+    elif a == 'kbd_hide': x('pkill -x matchbox-keyboa')
+    elif a == 'open':  # open one of the tablet's own web services full screen (HOME closes it)
+        u = str(v)
+        if not u.startswith(('http://127.0.0.1', 'http://localhost')) or any(c in u for c in '\'"`$\\ ;&|<>'): return None
+        x("WEBKIT_DISABLE_COMPOSITING_MODE=1 surf -F '%s'" % u)
+    elif a == 'webhome':  # web (surf) home instead of the native one on the tablet screen
+        p = '/home/gta2/.config/gta2/webhome'
+        if v == 'on': open(p, 'w').close(); os.system('chown gta2:gta2 ' + p)
+        elif os.path.exists(p): os.remove(p)
+        subprocess.Popen(['systemctl', 'restart', 'gta2-gui'])
+    elif a == 'terminal': x("xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0b0e14' -fg '#e6edf3' -e bash -l & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard")
+    elif a == 'vnc':
+        hp = ''.join(c for c in str(v) if c.isalnum() or c in '.:-')
+        if not hp: return None
+        x('vncviewer -FullScreen %s' % hp)
+    elif a == 'moonlight': x('QT_QPA_PLATFORM=xcb QT_XCB_GL_INTEGRATION=xcb_egl moonlight-qt')
+    elif a == 'desktop':  # desktop mode for the USB-C dock (IceWM, landscape); restarts X
+        subprocess.Popen(['/usr/local/bin/gta2-desktop', 'on', v if v in ('left', 'right', 'normal') else 'left'])
+    elif a == 'reboot': subprocess.Popen(['systemctl', 'reboot'])
+    elif a == 'poweroff': subprocess.Popen(['systemctl', 'poweroff'])
+    elif a == 'restart-ui': subprocess.Popen(['systemctl', 'restart', 'gta2-gui'])
+    elif a == 'classic':  # opt back into the old Tk launcher (Settings > Interface)
+        p = '/home/gta2/.config/gta2/classic'
+        if v == 'on': open(p, 'w').close()
+        elif os.path.exists(p): os.remove(p)
+        subprocess.Popen(['systemctl', 'restart', 'gta2-gui'])
+    elif a == 'ui': return {'ok': True, 'ui': uicfg({'screen_off': max(0, min(240, int(v)))})}
+    elif a == 'sys':  # gta2-ctl <area> <action> [args]: same root helper the old Settings app used
+        args = [str(x) for x in (v if isinstance(v, list) else [])][:4]
+        if not args or args[0] not in CTL_AREAS: return None
+        return {'ok': True, 'out': run(['/usr/local/sbin/gta2-ctl'] + args, 600)}
+    elif a == 'share':
+        args = [str(x) for x in (v if isinstance(v, list) else [])][:2]
+        if not args or args[0] not in ('smb', 'guest', 'passwd', 'status'): return None
+        return {'ok': True, 'out': run(['/usr/local/sbin/gta2-share'] + args, 60)}
+    elif a == 'fpslog': open('/tmp/gta2-fps.log', 'a').write(time.strftime('%H:%M:%S ') + str(v)[:120] + '\n')
+    elif a == 'wifi_scan': return {'ok': True, 'list': wifi_scan()}
+    elif a == 'wifi_radio': return {'ok': True, 'out': run(['nmcli', 'radio', 'wifi', 'on' if v == 'on' else 'off'])}
+    elif a == 'wifi_connect':
+        ssid, pw = str(v.get('ssid', '')), str(v.get('pw', ''))
+        if not ssid: return None
+        return {'ok': True, 'out': run(['nmcli', 'dev', 'wifi', 'connect', ssid] + (['password', pw] if pw else []), 60)}
+    elif a == 'wifi_forget': return {'ok': True, 'out': run(['nmcli', 'con', 'delete', str(v)])}
+    else: return None
+    return {'ok': True}
+
+
 try:
     req = sys.stdin.readline().split()
+    hdr = {}
+    while True:
+        l = sys.stdin.readline()
+        if not l or l in ('\r\n', '\n'): break
+        k, _, val = l.partition(':'); hdr[k.strip().lower()] = val.strip()
 except Exception:
-    req = []
+    req, hdr = [], {}
 meth, path = (req + ['GET', '/'])[:2]
+import urllib.parse
+query = urllib.parse.parse_qs(path.split('?', 1)[1]) if '?' in path else {}
 path = path.split('?')[0]
-if path == '/api':
+# GTA2APPS: desktop apps for the home screen (/apps, /icon, /apps/job) - /usr/local/lib/gta2/gta2apps.py
+try:
+    sys.path.insert(0, '/usr/local/lib/gta2'); import gta2apps
+except Exception:
+    gta2apps = None
+if gta2apps and gta2apps.handle(meth, path, query, send):
+    pass
+elif path == '/ctl' and meth == 'POST':
+    try:
+        body = json.loads(sys.stdin.read(int(hdr.get('content-length', '0') or 0)) or '{}')
+        res = ctl(body.get('a'), body.get('v')) if peer_local() else None
+    except Exception:
+        res = None
+    if res is None: send('403 Forbidden', 'text/plain', 'no')
+    else: send('200 OK', 'application/json', json.dumps(res))
+elif path == '/classic':
+    send('200 OK', 'text/html; charset=utf-8', PAGE)
+elif path in ('/', '/index.html') and os.path.exists(HOME):
+    send('200 OK', 'text/html; charset=utf-8', open(HOME, 'rb').read())
+elif path == '/live':   # cheap: just the two daemon files, for the 2 s refresh
+    out = {}
+    for k, f in (('net', '/run/gta2/netmon.json'), ('router', '/run/gta2/router.json')):
+        try: out[k] = json.load(open(f))
+        except Exception: out[k] = None
+    if out['net']: out['net'].pop('hist', None); out['net'].pop('speed', None); out['net'].pop('tgt', None)
+    if out['router']: out['router'].pop('hosts', None)
+    send('200 OK', 'application/json', json.dumps(out), 'Access-Control-Allow-Origin: *\r\n')
+elif path == '/detail':   # read-only breakdown for one home tile (key validated against DETAIL_KEYS)
+    k = (query.get('k') or [''])[0]
+    if k in DETAIL_KEYS:
+        try: send('200 OK', 'application/json', json.dumps(detail(k)), 'Access-Control-Allow-Origin: *\r\n')
+        except Exception as e: send('500 Error', 'application/json', json.dumps({'error': str(e)[:200]}))
+    else: send('404 Not Found', 'text/plain', 'unknown')
+elif path == '/api':
     send('200 OK', 'application/json', json.dumps(api()), 'Access-Control-Allow-Origin: *\r\n')
 elif path == '/wallpaper':
     p = wallpaper()

@@ -1,0 +1,4 @@
+prog "Terminal" utilities-terminal lxterminal
+prog "Files" system-file-manager pcmanfm
+prog "Browser" web-browser env WEBKIT_DISABLE_COMPOSITING_MODE=1 surf https://duckduckgo.com/
+prog "Tablet mode" go-home /usr/local/bin/gta2-desktop off

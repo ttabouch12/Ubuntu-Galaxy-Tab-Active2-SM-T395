@@ -1,0 +1,73 @@
+# Breeze-dark look for Openbox (gta2srv desktop mode)
+border.width: 1
+padding.width: 6
+padding.height: 5
+window.handle.width: 0
+window.client.padding.width: 0
+window.client.padding.height: 0
+window.label.text.justify: center
+window.active.border.color: #3daee9
+window.inactive.border.color: #31363b
+window.active.title.bg: flat solid
+window.active.title.bg.color: #31363b
+window.inactive.title.bg: flat solid
+window.inactive.title.bg.color: #2a2e32
+window.active.label.bg: parentrelative
+window.inactive.label.bg: parentrelative
+window.active.label.text.color: #fcfcfc
+window.inactive.label.text.color: #a1a9b1
+window.active.button.unpressed.bg: flat solid
+window.active.button.unpressed.bg.color: #31363b
+window.active.button.unpressed.image.color: #fcfcfc
+window.active.button.hover.bg: flat solid
+window.active.button.hover.bg.color: #4d5257
+window.active.button.hover.image.color: #ffffff
+window.active.button.pressed.bg: flat solid
+window.active.button.pressed.bg.color: #3daee9
+window.active.button.pressed.image.color: #ffffff
+window.active.button.disabled.bg: flat solid
+window.active.button.disabled.bg.color: #31363b
+window.active.button.disabled.image.color: #6e7175
+window.inactive.button.unpressed.bg: flat solid
+window.inactive.button.unpressed.bg.color: #2a2e32
+window.inactive.button.unpressed.image.color: #a1a9b1
+window.inactive.button.hover.bg: flat solid
+window.inactive.button.hover.bg.color: #4d5257
+window.inactive.button.hover.image.color: #fcfcfc
+window.inactive.button.pressed.bg: flat solid
+window.inactive.button.pressed.bg.color: #3daee9
+window.inactive.button.pressed.image.color: #fcfcfc
+window.inactive.button.disabled.bg: flat solid
+window.inactive.button.disabled.bg.color: #2a2e32
+window.inactive.button.disabled.image.color: #6e7175
+window.active.handle.bg: flat solid
+window.active.handle.bg.color: #31363b
+window.inactive.handle.bg: flat solid
+window.inactive.handle.bg.color: #2a2e32
+window.active.grip.bg: flat solid
+window.active.grip.bg.color: #31363b
+window.inactive.grip.bg: flat solid
+window.inactive.grip.bg.color: #2a2e32
+menu.border.width: 1
+menu.border.color: #3daee9
+menu.title.bg: flat solid
+menu.title.bg.color: #31363b
+menu.title.text.color: #fcfcfc
+menu.title.text.justify: center
+menu.items.bg: flat solid
+menu.items.bg.color: #2a2e32
+menu.items.text.color: #fcfcfc
+menu.items.disabled.text.color: #6e7175
+menu.items.active.bg: flat solid
+menu.items.active.bg.color: #3daee9
+menu.items.active.text.color: #ffffff
+menu.items.active.disabled.text.color: #a1a9b1
+menu.separator.color: #4d5257
+osd.border.color: #3daee9
+osd.bg: flat solid
+osd.bg.color: #2a2e32
+osd.label.text.color: #fcfcfc
+osd.hilight.bg: flat solid
+osd.hilight.bg.color: #3daee9
+osd.unhilight.bg: flat solid
+osd.unhilight.bg.color: #4d5257

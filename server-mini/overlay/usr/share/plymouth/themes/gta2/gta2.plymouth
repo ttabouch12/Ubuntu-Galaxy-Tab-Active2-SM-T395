@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=gta2
+Description=gta2srv boot screen: Windows Phone style title and sliding dots
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/gta2
+ScriptFile=/usr/share/plymouth/themes/gta2/gta2.script

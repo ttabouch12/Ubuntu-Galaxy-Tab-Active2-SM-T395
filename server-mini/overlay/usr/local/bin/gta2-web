@@ -1,0 +1,45 @@
+#!/usr/bin/python3
+# gta2-web: full-screen GTK4 / WebKitGTK 6.0 kiosk for the home screen.
+# Why not surf: surf is GTK3. On X11 GTK3 copies every GPU frame back through the CPU (slow on the Mali T830).
+# GTK4 draws the window with OpenGL and takes WebKit's GPU frames directly (dmabuf, no copy).
+#   gta2-web [url]          SIGUSR1: load the home page again (HOME key)   SIGUSR2: back (BACK key)
+import gi, os, signal, sys, time
+gi.require_version('Gtk', '4.0'); gi.require_version('WebKit', '6.0')
+from gi.repository import Gtk, WebKit, GLib, Gio
+
+HOME = 'http://127.0.0.1:8088/'
+URL = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else HOME
+open('/tmp/gta2-web.pid', 'w').write(str(os.getpid()))
+
+
+def activate(app):
+    win = Gtk.ApplicationWindow(application=app, title='gta2')
+    view = WebKit.WebView()
+    s = view.get_settings()
+    s.set_hardware_acceleration_policy(WebKit.HardwareAccelerationPolicy.ALWAYS)
+    s.set_enable_back_forward_navigation_gestures(False)
+    s.set_enable_developer_extras(False)
+    s.set_enable_webgl(True)
+    s.set_enable_2d_canvas_acceleration(True) if hasattr(s, 'set_enable_2d_canvas_acceleration') else None
+    view.connect('web-process-terminated', lambda v, r: (time.sleep(1), v.load_uri(HOME)))  # never leave a dead page
+    view.connect('notify::title', lambda v, p: win.set_title(v.get_title() or 'gta2'))
+    view.load_uri(URL)
+    win.set_child(view)
+    win.fullscreen()
+    win.present()
+
+    def go_home(*_):
+        view.load_uri(HOME + '#home-%d' % time.time()) if view.get_uri() and view.get_uri().startswith(HOME) else view.load_uri(HOME)
+        return True
+
+    def go_back(*_):
+        if view.can_go_back(): view.go_back()
+        return True
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, go_home)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR2, go_back)
+
+
+app = Gtk.Application(application_id='net.gta2.web')
+app.set_flags(Gio.ApplicationFlags.NON_UNIQUE)  # tests can run a second copy
+app.connect('activate', activate)
+app.run([sys.argv[0]])

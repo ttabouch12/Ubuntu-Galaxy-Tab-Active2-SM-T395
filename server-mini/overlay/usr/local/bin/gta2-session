@@ -1,11 +1,12 @@
 #!/bin/sh
-# gta2srv X session: matchbox (one fullscreen app at a time) + launcher (also handles the hardware keys)
+# gta2srv X session: matchbox (one fullscreen app at a time) + web home (Metro UI on :8088) + gta2-keys.
+# Old Tk launcher: touch ~/.config/gta2/classic (Settings > Interface) and restart gta2-gui.
 xset s off -dpms 2>/dev/null
-xsetroot -solid '#0f1115' 2>/dev/null
+xsetroot -solid '#000000' 2>/dev/null
 matchbox-window-manager -use_titlebar no -use_cursor no &
 sleep 1; sudo -n python3 /usr/local/sbin/gta2-fbinit.py --wake
 xdotool mouseup 1 2>/dev/null  # never start with a stuck synthetic button (blocks touch)
-# touch follows the screen rotation (Settings > Display). Portrait = Xorg "Rotate UD" = identity.
+# touch follows the screen rotation. Portrait = identity.
 case "$(cat /etc/gta2/rotation 2>/dev/null)" in
   portrait-flip) M="-1 0 1 0 -1 1 0 0 1" ;;
   landscape) M="0 -1 1 1 0 0 0 0 1" ;;
@@ -16,4 +17,23 @@ xinput list --name-only 2>/dev/null | grep -iE 'touch|pen' | while read -r d; do
   xinput set-prop "$d" "Coordinate Transformation Matrix" $M 2>/dev/null
 done
 [ -f ~/.config/gta2/kiosk_autostart ] && gta2-kiosk &
-while true; do python3 /usr/local/bin/gta2-launcher; sleep 1; done
+if [ -f ~/.config/gta2/classic ]; then
+  while true; do python3 /usr/local/bin/gta2-launcher; sleep 1; done   # the classic launcher owns the keys
+fi
+(while true; do python3 /usr/local/bin/gta2-keys; sleep 1; done) &
+(sleep 3; while true; do [ -f ~/.config/gta2/nonavbar ] || [ -f ~/.config/gta2/desktop ] || gta2-navbar; sleep 3; done) &   # on-screen back/home/keyboard
+sudo -n /usr/local/sbin/gta2-60hz   # panel at 60 Hz, not 30 (exynos decon divider bug, see gta2-60hz)
+webhome() {  # browser home: WebKit draws on the CPU, picom presents it on vblank (no tearing)
+  MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330 picom --backend egl --vsync --no-fading-openclose --config /dev/null -b 2>/dev/null
+  while true; do WEBKIT_DISABLE_COMPOSITING_MODE=1 surf -F http://127.0.0.1:8088/ >/dev/null 2>&1; sleep 1; done
+}
+[ -f ~/.config/gta2/webhome ] || [ ! -x /usr/local/bin/gta2-home ] && webhome
+# Native home (default): Qt Quick on the GPU, vsynced straight through X. No compositor: picom halves the frame rate.
+# Two quick crashes in a row -> fall back to the web home.
+fails=0
+while true; do
+  t0=$(date +%s); gta2-home >/dev/null 2>&1
+  if [ $(( $(date +%s) - t0 )) -lt 5 ]; then fails=$((fails + 1)); else fails=0; fi
+  [ $fails -ge 2 ] && webhome
+  sleep 1
+done

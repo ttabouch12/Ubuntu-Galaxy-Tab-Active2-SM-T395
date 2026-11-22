@@ -1,0 +1,10 @@
+prog "Terminal" utilities-terminal lxterminal
+prog "Files" system-file-manager pcmanfm
+prog "Text editor" accessories-text-editor mousepad
+prog "Web browser" web-browser env WEBKIT_DISABLE_COMPOSITING_MODE=1 surf https://duckduckgo.com/
+prog "Home dashboard" go-home env WEBKIT_DISABLE_COMPOSITING_MODE=1 surf http://127.0.0.1:8088/
+prog "Image viewer" image-viewer sh -c "feh -g 1000x700 --scale-down ~/Pictures 2>/dev/null || feh -g 1000x700 /usr/share/pixmaps"
+prog "On-screen keyboard" input-keyboard sh -c "pkill -x matchbox-keyboa || matchbox-keyboard"
+separator
+prog "Rotate screen" object-rotate-right /usr/local/bin/gta2-desktop rotate
+prog "Tablet mode" go-home /usr/local/bin/gta2-desktop off

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Tablet mode
+Comment=Leave the desktop and go back to the tablet home screen
+Exec=/usr/local/bin/gta2-desktop off
+Icon=go-home
+Categories=System;

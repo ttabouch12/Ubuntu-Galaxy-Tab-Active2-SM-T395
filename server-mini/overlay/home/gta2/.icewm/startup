@@ -1,0 +1,2 @@
+#!/bin/sh
+# nothing autostarts in desktop mode: keep it light
