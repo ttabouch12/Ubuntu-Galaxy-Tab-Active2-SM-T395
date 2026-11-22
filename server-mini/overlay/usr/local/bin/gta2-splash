@@ -1,0 +1,9 @@
+#!/bin/sh
+# gta2-splash: persistent launch splash window + its watcher (started by gta2-session).
+export QT_QPA_PLATFORM=xcb QT_XCB_GL_INTEGRATION=xcb_egl QML_XHR_ALLOW_FILE_READ=1 QT_QUICK_CONTROLS_STYLE=Basic
+[ -f /tmp/gta2-splash.cmd ] || echo '{"seq":0,"show":false}' > /tmp/gta2-splash.cmd
+pgrep -f 'bin/gta2-splashd' >/dev/null || /usr/local/bin/gta2-splashd &
+pgrep -f 'bin/gta2-recentsd' >/dev/null || /usr/local/bin/gta2-recentsd &
+pgrep -f 'home-qml/Recents.qml' >/dev/null || QML_XHR_ALLOW_FILE_WRITE=1 /usr/lib/qt6/bin/qml /usr/share/gta2/home-qml/Recents.qml >/dev/null 2>&1 &
+pgrep -f 'home-qml/Splash.qml' >/dev/null && exec sleep 30   # already running
+exec /usr/lib/qt6/bin/qml /usr/share/gta2/home-qml/Splash.qml

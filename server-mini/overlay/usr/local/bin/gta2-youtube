@@ -1,0 +1,6 @@
+#!/bin/sh
+# gta2-youtube: YouTube app (Qt Quick). Data from gta2-ytd (127.0.0.1:8099). Same render setup as gta2-home (EGL, threaded loop).
+export QT_QPA_PLATFORM=xcb QT_XCB_GL_INTEGRATION=xcb_egl QSG_RENDER_LOOP=threaded QT_QUICK_CONTROLS_STYLE=Basic
+systemctl is-active -q gta2-ytd || sudo -n systemctl start gta2-ytd 2>/dev/null
+pkill -f 'gta2/youtube/Main.qml' 2>/dev/null
+exec /usr/lib/qt6/bin/qml /usr/share/gta2/youtube/Main.qml

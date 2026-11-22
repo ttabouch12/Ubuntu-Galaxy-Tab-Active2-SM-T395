@@ -562,6 +562,7 @@ def status():  # everything the Settings page shows, in one call
     st['wifi_on'] = 'enabled' in run(['nmcli', 'radio', 'wifi'], 10)
     st['time']['now'] = time.strftime('%Y-%m-%d %H:%M')
     st['navbar'] = not os.path.exists('/home/gta2/.config/gta2/nonavbar')
+    st['kbd'] = 'classic' if os.path.exists('/home/gta2/.config/gta2/kbd_classic') else 'metro'
     st['ui'] = uicfg(); st['host'] = socket.gethostname()
     st['os'] = sh(". /etc/os-release; echo $PRETTY_NAME"); st['kernel'] = os.uname().release
     st['space'] = sh("df -h / /userdata | awk 'NR>1{print $6\"  \"$4\" free of \"$2}'")
@@ -581,9 +582,23 @@ def wifi_scan():
     return sorted(out, key=lambda w: (not w['on'], -w['signal']))
 
 
+def kbd(op):  # K2KBD: Windows Phone keyboard (gta2-kbd, always running); matchbox-keyboard if classic/unavailable
+    try:
+        import urllib.request
+        urllib.request.urlopen('http://127.0.0.1:8097/' + op, timeout=1).read(); return
+    except Exception:
+        pass
+    x({'toggle': 'pkill -x matchbox-keyboa || matchbox-keyboard', 'show': 'pgrep -x matchbox-keyboa >/dev/null || matchbox-keyboard',
+       'hide': 'pkill -x matchbox-keyboa'}[op])
+
+
 def ctl(a, v):
     if a in ('launch', 'uninstall', 'apps_job'):
         return gta2apps.ctl(a, v) if gta2apps else None
+    if a in ('yt_play', 'yt_sub', 'yt_hist_clear'):   # YouTube app (gta2yt.py)
+        sys.path.insert(0, '/usr/local/lib/gta2'); import gta2yt
+        return gta2yt.ctl(a, v, x)
+    if a == 'youtube': x('/usr/local/bin/gta2-youtube'); return {'ok': True}
     if a in ('storage', 'store_job', 'docker_move', 'app_storage', 'app_move'):   # external drive for apps (gta2store.py)
         sys.path.insert(0, '/usr/local/lib/gta2'); import gta2store
         return gta2store.ctl(a, v)
@@ -594,8 +609,15 @@ def ctl(a, v):
     if a == 'status': return status()
     if a == 'bright':
         open(bl + '/brightness', 'w').write(str(max(5, int(v))))
+    elif a == 'rotate':  # SRROT normal|left|right|inverted (turns auto-rotate off) or auto_on|auto_off
+        if v in ('auto_on', 'auto_off'): return {'ok': True, 'ui': uicfg({'autorotate': v == 'auto_on'})}
+        if v not in ('normal', 'left', 'right', 'inverted'): return None
+        uicfg({'autorotate': False}); x('gta2-rotate set %s' % v)
+    elif a == 'volkeys':  # VOL keys: auto (volume when a real audio output exists) | volume | brightness
+        if v not in ('auto', 'volume', 'brightness'): return None
+        return {'ok': True, 'ui': uicfg({'volkeys': v})}
     elif a == 'screenoff': x('gta2-keys --screen-off')
-    elif a == 'keyboard': x('pkill -x matchbox-keyboa || matchbox-keyboard')
+    elif a == 'keyboard': kbd('toggle')
     elif a == 'navbar':  # on-screen back/home/keyboard bar (gta2-navbar); flag file hides it
         p = '/home/gta2/.config/gta2/nonavbar'
         if v == 'off':
@@ -612,8 +634,14 @@ def ctl(a, v):
             return {'ok': True}
         try: return {'ok': True, 'pins': json.load(open(p))}
         except Exception: return {'ok': True, 'pins': []}
-    elif a == 'kbd_show': x('pgrep -x matchbox-keyboa >/dev/null || matchbox-keyboard')
-    elif a == 'kbd_hide': x('pkill -x matchbox-keyboa')
+    elif a == 'kbd_show': kbd('show')
+    elif a == 'kbd_hide': kbd('hide')
+    elif a == 'kbd_mode':  # metro | classic
+        p = '/home/gta2/.config/gta2/kbd_classic'
+        if v == 'classic': open(p, 'w').close()
+        elif os.path.exists(p): os.remove(p)
+        os.system('pkill -f gta2kbd.py; pkill -x matchbox-keyboa')
+        return {'ok': True, 'mode': 'classic' if os.path.exists(p) else 'metro'}
     elif a == 'open':  # open one of the tablet's own web services full screen (HOME closes it)
         u = str(v)
         if not u.startswith(('http://127.0.0.1', 'http://localhost')) or any(c in u for c in '\'"`$\\ ;&|<>'): return None
@@ -623,7 +651,7 @@ def ctl(a, v):
         if v == 'on': open(p, 'w').close(); os.system('chown gta2:gta2 ' + p)
         elif os.path.exists(p): os.remove(p)
         subprocess.Popen(['systemctl', 'restart', 'gta2-gui'])
-    elif a == 'terminal': x("xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0b0e14' -fg '#e6edf3' -e bash -l & sleep 1; pgrep -x matchbox-keyboa || matchbox-keyboard")
+    elif a == 'terminal': x("xterm -fa 'DejaVu Sans Mono' -fs 13 -bg '#0b0e14' -fg '#e6edf3' -e bash -l"); kbd('show')
     elif a == 'vnc':
         hp = ''.join(c for c in str(v) if c.isalnum() or c in '.:-')
         if not hp: return None
@@ -678,7 +706,13 @@ try:
     sys.path.insert(0, '/usr/local/lib/gta2'); import gta2apps
 except Exception:
     gta2apps = None
+try:
+    import gta2yt   # YouTube app: GET /yt (read-only)
+except Exception:
+    gta2yt = None
 if gta2apps and gta2apps.handle(meth, path, query, send):
+    pass
+elif gta2yt and gta2yt.handle(meth, path, query, send):
     pass
 elif path == '/ctl' and meth == 'POST':
     try:

@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+# gta2-recentsd: recent apps for the Windows Phone style task switcher (Recents.qml).
+#  - HOME no longer closes apps: they stay running behind the home; gta2-keys snapshots them (/tmp/gta2-thumbs).
+#  - Commands in /tmp/gta2-recents.cmd: "show", "hide", "switch <wid>", "close <wid>", "closeall", "snap <wid>".
+#  - State for the UI in /tmp/gta2-recents.json: {"seq", "show", "apps": [{wid, name, cls, pid, thumb, t}]}.
+#  - Memory guard: below 300 MB available, the oldest app that is not on screen is closed.
+import json, os, re, signal, subprocess, threading, time
+CMD, STATE, THUMBS = '/tmp/gta2-recents.cmd', '/tmp/gta2-recents.json', '/tmp/gta2-thumbs'
+OURS = re.compile(r'gta2-(splash|navbar|kbd|keyboard|home|recents)|matchbox-keyboard', re.I)
+os.makedirs(THUMBS, exist_ok=True)
+last_used = {}            # wid -> last time it was on screen
+show = False; seq = 0
+
+def out(*a, t=2):
+    try: return subprocess.run(a, capture_output=True, text=True, timeout=t).stdout
+    except Exception: return ''
+def clients(): return re.findall(r'0x[0-9a-f]+', out('xprop', '-root', '_NET_CLIENT_LIST'))
+def active():
+    m = re.search(r'0x[0-9a-f]+', out('xprop', '-root', '_NET_ACTIVE_WINDOW')); return m.group(0) if m else ''
+def props(w):
+    p = out('xprop', '-id', w, 'WM_NAME', 'WM_CLASS', '_NET_WM_PID', '_NET_WM_WINDOW_TYPE')
+    g = lambda k: (re.search(k + r'[^=]*= (.*)', p) or [None, ''])[1]
+    return {'name': g('WM_NAME').strip('"'), 'cls': g('WM_CLASS'), 'pid': int((re.search(r'\d+', g('_NET_WM_PID')) or [0])[0] or 0) if g('_NET_WM_PID') else 0,
+            'type': g('_NET_WM_WINDOW_TYPE'), 'raw': p}
+def is_app(p): return p['pid'] and 'DOCK' not in p['type'] and not OURS.search(p['name'] + ' ' + p['cls'])
+def apps():
+    res = []
+    for w in clients():
+        p = props(w)
+        if not is_app(p): continue
+        th = os.path.join(THUMBS, w + '.jpg')
+        cl = re.findall(r'"([^"]*)"', p['cls']); title = p['name']
+        if ' | ' in title: title = title.split(' | ')[-1]   # surf: "<flags> | title"
+        nm = title if (cl and cl[-1].lower() in ('surf', 'google-chrome', 'chromium', 'firefox', 'qml runtime', 'qml')) else (cl[-1] if cl else title)
+        res.append({'wid': w, 'name': nm[:40] or 'app', 'pid': p['pid'], 'thumb': th if os.path.exists(th) else '',
+                    'tv': int(os.path.getmtime(th)) if os.path.exists(th) else 0, 't': last_used.get(w, 0)})
+    res.sort(key=lambda a: -a['t'])
+    return res
+def write():
+    global seq; seq += 1
+    t = STATE + '.tmp'; open(t, 'w').write(json.dumps({'seq': seq, 'show': show, 'apps': apps()})); os.replace(t, STATE)
+def snap(w):
+    out('import', '-silent', '-window', 'root', '-crop', '800x1224+0+0', '-resize', '360x551!', '-quality', '80', os.path.join(THUMBS, w + '.jpg'), t=3)
+def close(w):
+    p = props(w)
+    if not is_app(p): return
+    try: os.kill(p['pid'], signal.SIGTERM)
+    except Exception: pass
+    def later(pid=p['pid']):
+        time.sleep(3)
+        try: os.kill(pid, signal.SIGKILL)
+        except Exception: pass
+    threading.Thread(target=later, daemon=True).start()
+    last_used.pop(w, None)
+    try: os.remove(os.path.join(THUMBS, w + '.jpg'))
+    except OSError: pass
+def home_win(): return (out('xdotool', 'search', '--name', '^gta2-home$').split() or [''])[0]
+def mem_avail():
+    for l in open('/proc/meminfo'):
+        if l.startswith('MemAvailable'): return int(l.split()[1]) // 1024
+    return 9999
+
+cmd_m = 0; tick = 0
+while True:
+    a = active()
+    if a and a in clients(): last_used[a] = time.time()
+    try: m = os.path.getmtime(CMD)
+    except OSError: m = cmd_m
+    if m != cmd_m:
+        cmd_m = m
+        try: c = open(CMD).read().split()
+        except Exception: c = []
+        op, arg = (c + ['', ''])[0], (c + ['', ''])[1]
+        if op == 'show':
+            if a and is_app(props(a)): snap(a)                 # the app on screen right now
+            show = True
+        elif op == 'hide': show = False
+        elif op == 'switch' and re.fullmatch(r'0x[0-9a-f]+', arg):
+            show = False; write(); out('xdotool', 'windowactivate', arg); last_used[arg] = time.time()
+        elif op == 'close' and re.fullmatch(r'0x[0-9a-f]+', arg): close(arg); time.sleep(0.3)
+        elif op == 'closeall':
+            for x in apps(): close(x['wid'])
+            time.sleep(0.4); show = False
+            hw = home_win()
+            if hw: out('xdotool', 'windowactivate', hw)
+        elif op == 'snap' and re.fullmatch(r'0x[0-9a-f]+', arg): snap(arg)
+        write()
+    tick += 1
+    if tick % 50 == 0:                                         # every ~5 s: memory guard + refresh
+        if mem_avail() < 300:
+            hidden = [x for x in apps() if x['wid'] != a]
+            if hidden: close(hidden[-1]['wid'])
+        write()
+    time.sleep(0.1)

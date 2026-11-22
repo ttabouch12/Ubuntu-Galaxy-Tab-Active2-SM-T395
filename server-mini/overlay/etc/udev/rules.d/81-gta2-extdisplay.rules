@@ -1,0 +1,2 @@
+# gta2: hook up a USB display adapter (ms912x / udl / gud / evdi) when it appears
+ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card[1-9]", RUN+="/bin/sh -c 'systemd-run --no-block /usr/local/bin/gta2-extdisplay'"

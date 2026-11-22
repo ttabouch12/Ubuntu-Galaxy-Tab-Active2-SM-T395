@@ -26,7 +26,8 @@ Window {
                     opacity: m.pressed ? 0.22 : 0; Behavior on opacity { NumberAnimation { duration: 120 } } }
         Item { id: holder; anchors.centerIn: parent; width: 30; height: 30; scale: m.pressed ? 0.88 : 1
                Behavior on scale { NumberAnimation { duration: 90 } } }
-        MouseArea { id: m; anchors.fill: parent; onClicked: bar.send(nb.cmd) }
+        MouseArea { id: m; anchors.fill: parent; pressAndHoldInterval: 600; onClicked: bar.send(nb.cmd)
+                    onPressAndHold: if (nb.cmd === "back") bar.send("recents") }   // hold back = recent apps
     }
     Row {
         anchors.fill: parent

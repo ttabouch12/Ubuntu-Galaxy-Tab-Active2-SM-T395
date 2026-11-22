@@ -1,0 +1,5 @@
+#!/bin/sh
+# gta2-kbd: Windows Phone style on-screen keyboard (always running, shown/hidden instantly).
+# Control: curl 127.0.0.1:8097/{show,hide,toggle}; classic matchbox-keyboard if ~/.config/gta2/kbd_classic exists.
+[ -f ~/.config/gta2/kbd_classic ] && exec sleep infinity
+exec python3 /usr/local/lib/gta2/gta2kbd.py

@@ -1,0 +1,12 @@
+#!/bin/sh
+# gta2-ytplay <video id>: play a YouTube video full screen with the Exynos MFC hardware decoder.
+# H.264 (avc1) only - the MFC can't do VP9/AV1. EGL context (GLX is slow on this X server).
+ID=$(printf %s "$1" | tr -cd 'A-Za-z0-9_-' | cut -c1-11)
+[ ${#ID} -eq 11 ] || exit 1
+YTDLP=/usr/local/bin/yt-dlp; [ -x $YTDLP ] || YTDLP=$(command -v yt-dlp)
+pkill -x mpv 2>/dev/null
+exec mpv --force-window=immediate --hwdec=${GTA2_HWDEC:-v4l2m2m-copy} --vo=gpu --gpu-context=x11egl --profile=fast \
+  --ytdl-format='bv*[vcodec^=avc1][height<=1080][fps<=30]+ba[ext=m4a]/bv*[vcodec^=avc1][height<=720]+ba[ext=m4a]/b[vcodec^=avc1]/b' \
+  --script-opts=ytdl_hook-ytdl_path="$YTDLP",osc-scalefullscreen=2,osc-layout=bottombar,osc-hidetimeout=2500,osc-deadzonesize=0 \
+  --cache=yes --demuxer-max-bytes=64MiB --demuxer-readahead-secs=20 --hr-seek=no --keep-open=no \
+  --input-default-bindings=yes --title='gta2 youtube' "https://www.youtube.com/watch?v=$ID"

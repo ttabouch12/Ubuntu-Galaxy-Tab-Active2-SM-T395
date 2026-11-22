@@ -1,0 +1,15 @@
+[Unit]
+Description=gta2: YouTube helper for the YouTube app (InnerTube + yt-dlp, 127.0.0.1:8099)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=gta2
+Environment=HOME=/home/gta2 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/python3 /usr/local/lib/gta2/gta2ytd.py
+Restart=always
+RestartSec=2
+Nice=-2
+
+[Install]
+WantedBy=multi-user.target

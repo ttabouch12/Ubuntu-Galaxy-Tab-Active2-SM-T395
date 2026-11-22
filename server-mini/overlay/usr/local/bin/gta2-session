@@ -21,7 +21,10 @@ if [ -f ~/.config/gta2/classic ]; then
   while true; do python3 /usr/local/bin/gta2-launcher; sleep 1; done   # the classic launcher owns the keys
 fi
 (while true; do python3 /usr/local/bin/gta2-keys; sleep 1; done) &
+(while true; do python3 /usr/local/bin/gta2-rotate daemon; sleep 5; done) &   # auto-rotation (idles without a sensor)
+(sleep 3; while true; do [ -f ~/.config/gta2/desktop ] || gta2-splash; sleep 3; done) &   # launch splash (app icon first)
 (sleep 3; while true; do [ -f ~/.config/gta2/nonavbar ] || [ -f ~/.config/gta2/desktop ] || gta2-navbar; sleep 3; done) &   # on-screen back/home/keyboard
+(while true; do gta2-kbd; sleep 1; done) &  # K2KBD: Windows Phone keyboard, always running (instant show)
 sudo -n /usr/local/sbin/gta2-60hz   # panel at 60 Hz, not 30 (exynos decon divider bug, see gta2-60hz)
 webhome() {  # browser home: WebKit draws on the CPU, picom presents it on vblank (no tearing)
   MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330 picom --backend egl --vsync --no-fading-openclose --config /dev/null -b 2>/dev/null

@@ -34,13 +34,17 @@ Window {
         return Qt.matrix4x4(c, 0, s, 0,  cy * s / d, 1, -cy * c / d, 0,  -s, 0, c, 0,  s / d, 0, -c / d, 1)
     }
     property var flipped: ({})          // groups currently swung away (an app was launched from them)
-    function launch(group, fn) {         // WP app launch: tiles flip away, the app starts as the animation ends
-        var f = flipped; f[group] = true; flipped = f; turn(group, false); launchFn = fn; launchT.restart()
+    function launch(group, fn, sp) {         // WP app launch: tiles flip away, the app starts as the animation ends
+        var f = flipped; f[group] = true; flipped = f; turn(group, false); launchFn = fn; launchSp = sp || null; launchT.restart()
     }
     property var launchFn: null
-    Timer { id: launchT; interval: 300; onTriggered: { if (win.launchFn) win.launchFn(); win.launchFn = null } }
+    property var launchSp: null
+    function splashWrite(o) { var x = new XMLHttpRequest(); x.open("PUT", "file:///tmp/gta2-splash.cmd"); x.send(JSON.stringify(o)) }
+    function splash(sp) { sp = sp || {}; splashWrite({seq: Date.now(), show: true, name: sp.name || "", icon: sp.icon || "", glyph: sp.glyph || "", col: sp.col || "#2d89ef"}) }
+    function splashHide() { splashWrite({seq: Date.now(), show: false}) }
+    Timer { id: launchT; interval: 300; onTriggered: { win.splash(win.launchSp); if (win.launchFn) win.launchFn(); win.launchFn = null } }
     function unflip() { var f = flipped; for (var g in f) if (f[g]) turn(g, true); flipped = ({}) }
-    onActiveChanged: if (active) { unflip(); loadApps() }   // back from an app (HOME, closed, or switched): tiles swing back in
+    onActiveChanged: if (active) { splashHide(); unflip(); loadApps() }   // back from an app (HOME, closed, or switched): tiles swing back in
     component Turn: SequentialAnimation {   // attach inside an item that has "tang"
         id: ta
         property Item target2
@@ -240,7 +244,7 @@ Window {
     function savePins() { var p = []; for (var i = 0; i < pinsM.count; i++) { var o = pinsM.get(i); p.push({id: o.id, name: o.name, icon: o.icon}) } ctl("pins", p) }
     function pinApp(a) { for (var i = 0; i < pinsM.count; i++) if (pinsM.get(i).id === a.id) { toast("already on start"); return } pinsM.append(a); savePins(); toast("pinned to start") }
     function unpinApp(id) { for (var i = 0; i < pinsM.count; i++) if (pinsM.get(i).id === id) { pinsM.remove(i); savePins(); return } }
-    function launchApp(group, a) { launch(group, function () { ctl("launch", {id: a.id}, function (j) { if (!j) toast("could not start " + a.name) }) }) }
+    function launchApp(group, a) { launch(group, function () { ctl("launch", {id: a.id}, function (j) { if (!j) toast("could not start " + a.name) }) }, {name: a.name, icon: a.icon, col: a.col}) }
     property var jobApp: null
     function uninstallApp(a) {
         confirm("Uninstall " + a.name + "?", function () {
@@ -388,7 +392,7 @@ Window {
             if (x.readyState !== XMLHttpRequest.DONE) return; var c = (x.responseText || "").trim();
             if (c !== "" && c !== win.lastCmd) { var first = win.lastCmd === ""; win.lastCmd = c; if (!first) win.goHome() } };
             x.open("GET", "file:///tmp/gta2-home.cmd"); x.send() } }
-    function goHome() { unflip(); loadApps(); closeDetail(); closeSub(); chooserBox.visible = false; pv.currentIndex = 0; pages.forEach(function (p) { p.contentY = 0 }); win.ctl("kbd_hide") }
+    function goHome() { splashHide(); unflip(); loadApps(); closeDetail(); closeSub(); chooserBox.visible = false; pv.currentIndex = 0; pages.forEach(function (p) { p.contentY = 0 }); win.ctl("kbd_hide") }
     Shortcut { sequences: ["Esc", "Back"]; onActivated: { if (ctxBox.visible) ctxBox.visible = false; else if (chooserBox.visible) chooserBox.visible = false; else if (sub.open) win.closeSub(); else if (det.open) win.closeDetail(); else pv.currentIndex = 0 } }
 
     // ---------- panorama
@@ -444,14 +448,14 @@ Window {
                     Flow { width: parent.width; spacing: win.gap
                         Repeater { model: [["files", "#1e7145", "▤", "/#/files"], ["app store", "#2d89ef", "⇣", "/#/"], ["casaos", "#2b5797", "⌂", "/"], ["pi-hole", "#9f00a7", "⛨", ":8083/admin/"],
                                            ["portainer", "#00aba9", "▣", ":9000/"], ["terminal", "#1d1d1d", "›_", "!terminal"], ["keyboard", "#555555", "⌨", "!keyboard"], ["classic panel", "#7e3878", "☰", ":8090/"],
-                                           ["desktop", "#2b5797", "▭", "!desktop"], ["store", "#1e7145", "✚", "!store"]]
+                                           ["desktop", "#2b5797", "▭", "!desktop"], ["store", "#1e7145", "✚", "!store"], ["youtube", "#b91d47", "▶", "!youtube"]]
                             Tile { tgroup: "apps"; color: modelData[1]; icon: modelData[2]; name: modelData[0]
                                    onClicked: { var u = modelData[3];
                                        if (u === "!keyboard") { win.ctl("keyboard"); return }
                                        win.launch("apps", function () {
                                            if (u === "!desktop") win.ctl("desktop", "left", function (j) { if (!j) win.toast("desktop mode is not available yet") });
                                            else if (u === "!store") win.ctl("launch", {id: "pi-apps"}, function (j) { if (!j || j.ok === false) win.toast("Pi-Apps store is not installed yet") });
-                                           else if (u[0] === "!") win.ctl(u.slice(1)); else win.ctl("open", win.base + u) }) } } } }
+                                           else if (u[0] === "!") win.ctl(u.slice(1)); else win.ctl("open", win.base + u) }, {name: modelData[0], glyph: modelData[2], col: modelData[1]}) } } } }
                     Head { text: "installed apps"; visible: appsM.count > 0 }
                     Flow { width: parent.width; spacing: win.gap; visible: appsM.count > 0
                         Repeater { model: appsM
@@ -472,10 +476,10 @@ Window {
                     Head { text: "vnc"; topPadding: 0 }
                     Note { text: "Connect to a VNC server on your PC (TightVNC, TigerVNC, RealVNC…)." }
                     Field { id: vncAddr; placeholder: "192.168.1.x:5900" }
-                    Btn { text: "connect"; primary: true; onClicked: { if (vncAddr.text.trim() === "") win.toast("enter the PC address first"); else { win.ctl("kbd_hide"); var a = vncAddr.text.trim(); win.launch("screen", function () { win.ctl("vnc", a) }) } } }
+                    Btn { text: "connect"; primary: true; onClicked: { if (vncAddr.text.trim() === "") win.toast("enter the PC address first"); else { win.ctl("kbd_hide"); var a = vncAddr.text.trim(); win.launch("screen", function () { win.ctl("vnc", a) }, {name: "vnc", glyph: "▣", col: "#2b5797"}) } } }
                     Head { text: "moonlight" }
                     Note { text: "Stream your PC from Sunshine or NVIDIA GameStream. Pick 720p, 30–60 fps." }
-                    Btn { text: "open moonlight"; primary: true; onClicked: win.launch("screen", function () { win.ctl("moonlight") }) }
+                    Btn { text: "open moonlight"; primary: true; onClicked: win.launch("screen", function () { win.ctl("moonlight") }, {name: "moonlight", glyph: "▶", col: "#2b5797"}) }
                     Head { text: "extend windows" }
                     Note { text: "spacedesk discontinued its browser viewer, so it cannot run on Linux. Same result, smoother: on the PC install Sunshine and a free virtual display driver (\"Virtual Display Driver\" on GitHub). Windows then gets a real extra monitor: pick it in Sunshine, then open Moonlight here and choose Desktop." }
                 } }
@@ -723,7 +727,21 @@ Window {
                 Btn { text: "keyboard"; onClicked: win.ctl("keyboard") } }
             Toggle { label: "On-screen buttons"; hint: "back · home · keyboard bar at the bottom"; on: win.st.navbar !== false
                      onToggled: (v) => win.ctl("navbar", v ? "on" : "off", function () { win.toast(v ? "buttons on" : "buttons hidden") }) }
-            Note { text: "POWER screen off/on · VOL brightness · HOME this screen · BACK back · RECENTS keyboard" }
+            Head { text: "rotation" }   // SRROT
+            Toggle { label: "Auto-rotate"; hint: "follow the motion sensor"; on: (win.st.ui || {}).autorotate !== false
+                     onToggled: (v) => win.ctl("rotate", v ? "auto_on" : "auto_off", function () { win.toast(v ? "auto-rotate on" : "auto-rotate off") }) }
+            Flow { width: parent.width; spacing: 10
+                Btn { text: "portrait"; onClicked: win.ctl("rotate", "normal") }
+                Btn { text: "landscape"; onClicked: win.ctl("rotate", "left") }
+                Btn { text: "landscape ↺"; onClicked: win.ctl("rotate", "right") }
+                Btn { text: "upside down"; onClicked: win.ctl("rotate", "inverted") } }
+            Head { text: "volume keys" }
+            Chooser { options: ["auto", "volume", "brightness"]; value: (win.st.ui || {}).volkeys || "auto"
+                      onPicked: (v) => win.ctl("volkeys", v, function () { win.toast("saved") }) }
+            Note { text: "POWER screen off/on · VOL volume (brightness when no speaker/headphones) · HOME this screen · BACK back · RECENTS keyboard" }
+            Head { text: "keyboard" }
+            Chooser { options: ["metro", "classic"]; value: win.st.kbd || "metro"
+                      onPicked: (v) => win.ctl("kbd_mode", v, function () { win.toast("keyboard: " + v) }) }
             Component.onCompleted: win.ctl("info", undefined, function (j) { try { if (j) { br.to = j.max; br.value = j.bright } } catch (e) {} })
         } }
     Component { id: batC

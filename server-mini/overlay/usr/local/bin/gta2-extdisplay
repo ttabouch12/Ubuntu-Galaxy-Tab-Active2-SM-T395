@@ -1,0 +1,12 @@
+#!/bin/sh
+# gta2-extdisplay: attach a USB display adapter (MacroSilicon ms912x, DisplayLink udl/evdi, GUD) to the running X screen.
+# The Exynos 7870 has no DisplayPort/HDMI output, so USB-C docks that use DP Alt Mode can't show a picture;
+# a USB graphics adapter can. Called by udev when a new DRM card appears, or by hand.
+export DISPLAY=:0 XAUTHORITY=/home/gta2/.Xauthority
+sleep 2
+N=$(runuser -u gta2 -- xrandr --listproviders 2>/dev/null | grep -c 'Provider [1-9]')
+[ "$N" -gt 0 ] || exit 0
+for p in $(seq 1 "$N"); do runuser -u gta2 -- xrandr --setprovideroutputsource "$p" 0 2>/dev/null; done
+# mirror the tablet by default; desktop mode can extend instead (xrandr --right-of DSI-1)
+O=$(runuser -u gta2 -- xrandr | awk '/ connected/ && $1!="DSI-1"{print $1; exit}')
+[ -n "$O" ] && runuser -u gta2 -- xrandr --output "$O" --auto --same-as DSI-1

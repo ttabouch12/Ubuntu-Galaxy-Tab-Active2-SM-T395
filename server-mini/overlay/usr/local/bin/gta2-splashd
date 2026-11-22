@@ -1,0 +1,45 @@
+#!/usr/bin/python3
+# gta2-splashd: hides the launch splash as soon as the launched app's window is on screen.
+# Watches /tmp/gta2-splash.cmd; on a new "show" it snapshots _NET_CLIENT_LIST and polls for a new
+# top-level window (or a changed active window) that is not one of our own helper windows.
+import json, os, re, subprocess, time
+CMD = '/tmp/gta2-splash.cmd'
+OURS = re.compile(r'gta2-(splash|navbar|kbd|keyboard|home)|matchbox-keyboard', re.I)
+
+def out(*a):
+    try: return subprocess.run(a, capture_output=True, text=True, timeout=2).stdout
+    except Exception: return ''
+
+def clients(): return set(re.findall(r'0x[0-9a-f]+', out('xprop', '-root', '_NET_CLIENT_LIST')))
+def active():
+    m = re.search(r'0x[0-9a-f]+', out('xprop', '-root', '_NET_ACTIVE_WINDOW')); return m.group(0) if m else ''
+def label(wid): return out('xprop', '-id', wid, 'WM_NAME', 'WM_CLASS')
+def read():
+    try: return json.load(open(CMD))
+    except Exception: return {}
+def write(d):
+    t = CMD + '.tmp'; open(t, 'w').write(json.dumps(d)); os.replace(t, CMD)
+
+last = None
+while True:
+    d = read()
+    if d.get('show') and d.get('seq') != last:
+        last = d.get('seq'); seq = last
+        base = clients(); act0 = active(); t0 = time.time(); hit = None
+        while time.time() - t0 < 15:
+            cur = read()
+            if cur.get('seq') != seq: break                      # hidden by HOME or a newer launch
+            for wid in clients() - base:
+                if OURS.search(label(wid)): base.add(wid); continue
+                hit = wid; break
+            a = active()
+            if not hit and a and a != act0 and not OURS.search(label(a)): hit = a
+            if hit: break
+            time.sleep(0.08)
+        if read().get('seq') == seq:
+            if hit:
+                time.sleep(0.3)                                     # let the app paint its first frame under the splash
+                sp = out('xdotool', 'search', '--name', '^gta2-splash$').split()
+                for s in sp: out('xdotool', 'windowraise', s)
+            write({'seq': (seq or 0) + 1, 'show': False, 'fail': hit is None})
+    time.sleep(0.05)

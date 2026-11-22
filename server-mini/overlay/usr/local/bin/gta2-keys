@@ -55,15 +55,26 @@ def kiosk():  # surf's real toplevel is the one with a title "... | page" (the o
 DESKTOP_FLAG = '/home/gta2/.config/gta2/desktop'
 
 
+def recents():  # RCNTS: Windows Phone task switcher (gta2-recentsd + Recents.qml)
+    open('/tmp/gta2-recents.cmd', 'w').write('show %f\n' % time.time())
+
+
+def snap_active():  # thumbnail of the app on screen before the home covers it (for the task switcher)
+    a = out('xdotool getactivewindow')
+    if a.isdigit() and not out('xdotool getwindowname %s' % a).startswith('gta2-'):
+        os.makedirs('/tmp/gta2-thumbs', exist_ok=True)
+        sh('import', '-silent', '-window', 'root', '-crop', '800x1224+0+0', '-resize', '360x551!', '-quality', '80', '/tmp/gta2-thumbs/%s.jpg' % hex(int(a)))
+
+
 def home():
     if os.path.exists(DESKTOP_FLAG):  # desktop mode: HOME opens the IceWM start menu, never closes apps
         sh('xdotool', 'key', 'ctrl+Escape'); return
     sh('xdotool', 'mouseup', '1')  # a stuck synthetic button blocks touch
-    sh('sudo', '-n', 'systemctl', 'stop', 'gta2app-*')  # desktop apps launched from the home screen
-    for p in ('vncviewer', 'moonlight-qt', 'moonlight', 'xterm', 'matchbox-keyboa'):
-        sh('pkill', '-x', p)
+    snap_active()
+    sh('curl', '-s', '-m1', '127.0.0.1:8097/hide')
+    sh('pkill', '-x', 'matchbox-keyboa')
+    open('/tmp/gta2-recents.cmd', 'w').write('hide %f\n' % time.time())
     if sh('pgrep', '-f', 'home-qml/Main.qml') == 0:  # native QML home: close web pages too, tell it to reset
-        sh('pkill', '-x', 'surf')
         open('/tmp/gta2-home.cmd', 'w').write('home %f\n' % time.time())
         sh('xdotool', 'search', '--name', '^gta2-home$', 'windowactivate'); return
     if os.path.exists('/tmp/gta2-web.pid') and sh('pkill', '-USR1', '-f', 'bin/gta2-web') == 0:
@@ -81,6 +92,14 @@ def back():
     else: sh('xdotool', 'key', 'Escape')
 
 
+def volmode():  # Settings > display > volume keys
+    try: m = json.load(open(UI)).get('volkeys', 'auto')
+    except Exception: m = 'auto'
+    if m != 'auto': return m
+    s = out('XDG_RUNTIME_DIR=/run/user/%d pactl get-default-sink' % os.getuid())
+    return 'volume' if s and s != 'auto_null' else 'brightness'
+
+
 def timeout_min():
     try: return int(json.load(open(UI)).get('screen_off', 0))
     except Exception: return 0
@@ -89,8 +108,8 @@ def timeout_min():
 signal.signal(signal.SIGUSR1, lambda *a: screen(False))
 
 
-def keyboard():
-    sh('sh', '-c', 'pkill -x matchbox-keyboa || matchbox-keyboard &')
+def keyboard():  # K2KBD: Windows Phone keyboard (gta2-kbd), matchbox-keyboard as fallback
+    sh('sh', '-c', 'curl -s -m1 127.0.0.1:8097/toggle >/dev/null || pkill -x matchbox-keyboa || matchbox-keyboard &')
 
 
 nav_m = os.path.getmtime(NAV) if os.path.exists(NAV) else 0
@@ -109,6 +128,7 @@ def nav():  # navbar buttons: same actions as the hardware keys
     if c == 'home': home()
     elif c == 'back': back()
     elif c == 'keyboard': keyboard()
+    elif c == 'recents': recents()
 
 
 def devs():
@@ -140,9 +160,16 @@ while True:
             if t == 1 and v == 1: sh('xset', 'dpms', 'force', 'off')  # touch woke X: keep it dark until POWER
             continue
         st['last'] = time.time()
+        if t == 1 and c == 158:   # BACK: short press = back, hold 0.6 s = task switcher
+            if v == 1: st['back0'] = time.time()
+            elif v == 0 and st.get('back0'):
+                recents() if time.time() - st.pop('back0') >= 0.6 else back()
+            continue
         if t != 1 or v != 1: continue
-        if c == 115: bl(bl() + MAX // 10)
+        if c in (115, 114) and volmode() == 'volume':  # SRVOL
+            sh('sh', '-c', 'XDG_RUNTIME_DIR=/run/user/%d wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%%%s' % (os.getuid(), '+' if c == 115 else '-'))
+        elif c == 115: bl(bl() + MAX // 10)
         elif c == 114: bl(max(5, bl() - MAX // 10))
         elif c in (172, 102): home()
         elif c == 158: back()
-        elif c == 254: keyboard()
+        elif c == 254: recents()

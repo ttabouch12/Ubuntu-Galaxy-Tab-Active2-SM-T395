@@ -11,13 +11,23 @@ OUT = 'DSI-1'
 UI = os.path.expanduser('~/.config/gta2/ui.json')
 LOCK = '/tmp/gta2-rotate.lock'
 STATE = '/tmp/gta2-rotate.state'
-# touch matrices (libinput "Coordinate Transformation Matrix") for each xrandr rotation
-MATRIX = {
+# touch matrices ("Coordinate Transformation Matrix") for each xrandr rotation. The Tab Active2's touch layer reports
+# 180 degrees turned against the modesetting display (/etc/gta2/rotation = portrait-flip), so compose with that.
+PLAIN = {
     'normal':   '1 0 0 0 1 0 0 0 1',
     'inverted': '-1 0 1 0 -1 1 0 0 1',
     'left':     '0 -1 1 1 0 0 0 0 1',
     'right':    '0 1 0 -1 0 1 0 0 1',
 }
+FLIP = {
+    'normal':   '-1 0 1 0 -1 1 0 0 1',
+    'inverted': '1 0 0 0 1 0 0 0 1',
+    'left':     '0 1 0 -1 0 1 0 0 1',
+    'right':    '0 -1 1 1 0 0 0 0 1',
+}
+try: MATRIX = FLIP if open('/etc/gta2/rotation').read().strip() == 'portrait-flip' else PLAIN
+except OSError: MATRIX = PLAIN
+DESKTOP = os.path.expanduser('~/.config/gta2/desktop')  # desktop mode owns the rotation
 os.environ.setdefault('DISPLAY', ':0')
 
 
@@ -42,7 +52,7 @@ def touch_devices():
 def apply(rot):
     if rot not in MATRIX: raise SystemExit('bad rotation: %s' % rot)
     if rot != current():
-        subprocess.call(['xrandr', '--output', OUT, '--rotate', rot])
+        subprocess.call(['xrandr', '--output', OUT, '--rotate', rot]); time.sleep(0.3)
         subprocess.call(['sudo', '-n', '/usr/local/sbin/gta2-60hz'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # a modeset restores the 30 Hz divider
     for d in touch_devices():
         subprocess.call(['xinput', 'set-prop', d, 'Coordinate Transformation Matrix'] + MATRIX[rot].split(), stderr=subprocess.DEVNULL)
@@ -84,7 +94,7 @@ def daemon():
     cand, since = None, 0
     while True:
         time.sleep(0.25)
-        if os.path.exists(LOCK) or not cfg().get('autorotate', True): cand = None; continue
+        if os.path.exists(LOCK) or os.path.exists(DESKTOP) or not cfg().get('autorotate', True): cand = None; continue
         a = accel()
         if not a: time.sleep(5); continue          # no sensor (yet): idle cheaply
         o = orientation(*a)
